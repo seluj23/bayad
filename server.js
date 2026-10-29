@@ -1,0 +1,244 @@
+// Bayad server: serves the app and a small sync API, with Google sign-in.
+// No npm dependencies — uses Node's built-in http, crypto and sqlite modules (Node 22+).
+'use strict';
+const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const { DatabaseSync } = require('node:sqlite');
+
+/* ---------- config ---------- */
+const PORT = Number(process.env.PORT || 3000);
+const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
+const ALLOWED = (process.env.ALLOWED_EMAILS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+const DEV_LOGIN = process.env.DEV_FAKE_LOGIN === '1'; // local testing only — never set in production
+const SECURE = PUBLIC_URL.startsWith('https://');
+const STATIC_DIR = path.join(__dirname, 'public');
+const SESSION_DAYS = 180;
+const REDIRECT_URI = PUBLIC_URL + '/auth/google/callback';
+
+if (!CLIENT_ID || !CLIENT_SECRET) console.warn('[bayad] GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not set: sign-in is disabled, the app still works offline.');
+if (!ALLOWED.length) console.warn('[bayad] ALLOWED_EMAILS not set: any Google account can sign in (each gets its own separate data).');
+if (DEV_LOGIN) console.warn('[bayad] DEV_FAKE_LOGIN is ON. Do not use this in production.');
+
+/* ---------- database ---------- */
+fs.mkdirSync(DATA_DIR, { recursive: true });
+const db = new DatabaseSync(path.join(DATA_DIR, 'bayad-server.sqlite3'));
+db.exec(`
+PRAGMA journal_mode = WAL;
+PRAGMA foreign_keys = ON;
+CREATE TABLE IF NOT EXISTS users (
+  id         INTEGER PRIMARY KEY,
+  google_sub TEXT UNIQUE NOT NULL,
+  email      TEXT NOT NULL,
+  created    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created    TEXT NOT NULL,
+  expires    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS records (
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind       TEXT NOT NULL CHECK (kind IN ('item','loan')),
+  id         TEXT NOT NULL,
+  data       TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  deleted    INTEGER NOT NULL DEFAULT 0,
+  seq        INTEGER NOT NULL,
+  PRIMARY KEY (user_id, kind, id)
+);
+CREATE INDEX IF NOT EXISTS records_seq ON records(user_id, seq);
+`);
+const q = {
+  userBySub: db.prepare('SELECT * FROM users WHERE google_sub = ?'),
+  addUser: db.prepare('INSERT INTO users (google_sub, email, created) VALUES (?, ?, ?)'),
+  setEmail: db.prepare('UPDATE users SET email = ? WHERE id = ?'),
+  addSession: db.prepare('INSERT INTO sessions (token_hash, user_id, created, expires) VALUES (?, ?, ?, ?)'),
+  session: db.prepare('SELECT u.id, u.email FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires > ?'),
+  dropSession: db.prepare('DELETE FROM sessions WHERE token_hash = ?'),
+  pruneSessions: db.prepare('DELETE FROM sessions WHERE expires <= ?'),
+  maxSeq: db.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM records WHERE user_id = ?'),
+  record: db.prepare('SELECT updated_at FROM records WHERE user_id = ? AND kind = ? AND id = ?'),
+  upsert: db.prepare(`INSERT INTO records (user_id, kind, id, data, updated_at, deleted, seq) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, kind, id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at,
+    deleted = excluded.deleted, seq = excluded.seq`),
+  since: db.prepare('SELECT kind, id, data, updated_at, deleted, seq FROM records WHERE user_id = ? AND seq > ? ORDER BY seq LIMIT 2000'),
+};
+q.pruneSessions.run(new Date().toISOString());
+
+/* ---------- helpers ---------- */
+const sha = s => crypto.createHash('sha256').update(s).digest('hex');
+const b64url = buf => buf.toString('base64url');
+function cookies(req) {
+  const out = {};
+  (req.headers.cookie || '').split(';').forEach(p => { const i = p.indexOf('='); if (i > 0) out[p.slice(0, i).trim()] = decodeURIComponent(p.slice(i + 1).trim()); });
+  return out;
+}
+function cookie(name, value, maxAgeSec) {
+  return `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}${SECURE ? '; Secure' : ''}`;
+}
+function send(res, status, body, headers = {}) {
+  const isJson = typeof body !== 'string' && !Buffer.isBuffer(body);
+  res.writeHead(status, { 'Cache-Control': 'no-store', ...(isJson ? { 'Content-Type': 'application/json' } : {}), ...headers });
+  res.end(isJson ? JSON.stringify(body) : body);
+}
+function redirect(res, to, extraHeaders = {}) { res.writeHead(302, { Location: to, 'Cache-Control': 'no-store', ...extraHeaders }); res.end(); }
+function readBody(req, limit = 5 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    let size = 0; const chunks = [];
+    req.on('data', c => { size += c.length; if (size > limit) { reject(Object.assign(new Error('too_large'), { status: 413 })); req.destroy(); } else chunks.push(c); });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+function currentUser(req) {
+  const t = cookies(req).bayad_session;
+  if (!t) return null;
+  return q.session.get(sha(t), new Date().toISOString()) || null;
+}
+function startSession(userId) {
+  const token = b64url(crypto.randomBytes(32));
+  const now = new Date();
+  q.addSession.run(sha(token), userId, now.toISOString(), new Date(now.getTime() + SESSION_DAYS * 864e5).toISOString());
+  return cookie('bayad_session', token, SESSION_DAYS * 86400);
+}
+function loginUser(sub, email) {
+  let u = q.userBySub.get(sub);
+  if (!u) { const r = q.addUser.run(sub, email, new Date().toISOString()); u = { id: Number(r.lastInsertRowid) }; }
+  else if (u.email !== email) q.setEmail.run(email, u.id);
+  return u.id;
+}
+
+/* ---------- Google sign-in (authorization code + PKCE) ---------- */
+function authStart(req, res) {
+  if (!CLIENT_ID) return redirect(res, '/?sync=not_configured');
+  const state = b64url(crypto.randomBytes(16));
+  const verifier = b64url(crypto.randomBytes(32));
+  const challenge = b64url(crypto.createHash('sha256').update(verifier).digest());
+  const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  url.search = new URLSearchParams({
+    client_id: CLIENT_ID, redirect_uri: REDIRECT_URI, response_type: 'code', scope: 'openid email',
+    state, code_challenge: challenge, code_challenge_method: 'S256', prompt: 'select_account'
+  }).toString();
+  redirect(res, url.toString(), { 'Set-Cookie': cookie('bayad_oauth', state + '.' + verifier, 600) });
+}
+async function authCallback(req, res, url) {
+  const clear = cookie('bayad_oauth', '', 0);
+  const [state, verifier] = (cookies(req).bayad_oauth || '').split('.');
+  if (url.searchParams.get('error')) return redirect(res, '/?sync=cancelled', { 'Set-Cookie': clear });
+  if (!state || state !== url.searchParams.get('state')) return redirect(res, '/?sync=failed', { 'Set-Cookie': clear });
+  try {
+    const r = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ code: url.searchParams.get('code') || '', client_id: CLIENT_ID, client_secret: CLIENT_SECRET,
+        redirect_uri: REDIRECT_URI, grant_type: 'authorization_code', code_verifier: verifier })
+    });
+    const tok = await r.json();
+    if (!r.ok || !tok.id_token) throw new Error('token exchange failed: ' + (tok.error || r.status));
+    // The ID token came straight from Google over TLS, so its claims can be read directly (OpenID Connect §3.1.3.7).
+    const claims = JSON.parse(Buffer.from(tok.id_token.split('.')[1], 'base64url').toString('utf8'));
+    const iss = claims.iss;
+    if (claims.aud !== CLIENT_ID || (iss !== 'https://accounts.google.com' && iss !== 'accounts.google.com') || claims.exp * 1000 < Date.now()) throw new Error('bad id token');
+    if (!claims.email || claims.email_verified !== true) return redirect(res, '/?sync=unverified', { 'Set-Cookie': clear });
+    const email = String(claims.email).toLowerCase();
+    if (ALLOWED.length && !ALLOWED.includes(email)) return redirect(res, '/?sync=not_allowed', { 'Set-Cookie': clear });
+    const sess = startSession(loginUser(claims.sub, email));
+    redirect(res, '/?sync=signed_in', { 'Set-Cookie': [clear, sess] });
+  } catch (e) {
+    console.error('[bayad] sign-in failed:', e.message);
+    redirect(res, '/?sync=failed', { 'Set-Cookie': clear });
+  }
+}
+
+/* ---------- sync ---------- */
+const ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/;
+function sync(user, body) {
+  const since = Number.isInteger(body.since) && body.since >= 0 ? body.since : 0;
+  const changes = Array.isArray(body.changes) ? body.changes.slice(0, 5000) : [];
+  let accepted = 0;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    let seq = q.maxSeq.get(user.id).m;
+    for (const c of changes) {
+      if (!c || (c.kind !== 'item' && c.kind !== 'loan')) continue;
+      if (typeof c.id !== 'string' || !c.id || c.id.length > 100) continue;
+      if (typeof c.updated_at !== 'string' || !ISO.test(c.updated_at)) continue;
+      const data = JSON.stringify(c.deleted ? {} : (c.data && typeof c.data === 'object' ? c.data : {}));
+      if (data.length > 65536) continue;
+      const cur = q.record.get(user.id, c.kind, c.id);
+      if (cur && cur.updated_at >= c.updated_at) continue; // newer (or same) version already stored
+      q.upsert.run(user.id, c.kind, c.id, data, c.updated_at, c.deleted ? 1 : 0, ++seq);
+      accepted++;
+    }
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  const rows = q.since.all(user.id, since);
+  return {
+    accepted,
+    cursor: rows.length ? rows[rows.length - 1].seq : Math.max(since, 0),
+    more: rows.length === 2000,
+    changes: rows.map(r => ({ kind: r.kind, id: r.id, data: r.deleted ? null : JSON.parse(r.data), updated_at: r.updated_at, deleted: !!r.deleted }))
+  };
+}
+
+/* ---------- static files ---------- */
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
+  '.wasm': 'application/wasm', '.webmanifest': 'application/manifest+json', '.json': 'application/json', '.png': 'image/png', '.txt': 'text/plain; charset=utf-8' };
+function serveStatic(req, res, pathname) {
+  let rel = decodeURIComponent(pathname);
+  if (rel === '/' || !path.extname(rel)) rel = '/index.html';
+  const file = path.normalize(path.join(STATIC_DIR, rel));
+  if (!file.startsWith(STATIC_DIR + path.sep)) return send(res, 404, 'Not found');
+  fs.stat(file, (err, st) => {
+    if (err || !st.isFile()) return send(res, 404, 'Not found', { 'Content-Type': 'text/plain' });
+    const ext = path.extname(file);
+    const cache = rel.startsWith('/icons/') ? 'public, max-age=604800' : 'no-cache';
+    res.writeHead(200, { 'Content-Type': TYPES[ext] || 'application/octet-stream', 'Content-Length': st.size, 'Cache-Control': cache, 'X-Content-Type-Options': 'nosniff' });
+    if (req.method === 'HEAD') return res.end();
+    fs.createReadStream(file).pipe(res);
+  });
+}
+
+/* ---------- router ---------- */
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, PUBLIC_URL);
+  const p = url.pathname;
+  try {
+    if (p === '/healthz') return send(res, 200, { ok: true });
+    if (p === '/auth/google' && req.method === 'GET') return authStart(req, res);
+    if (p === '/auth/google/callback' && req.method === 'GET') return await authCallback(req, res, url);
+    if (p === '/auth/dev' && DEV_LOGIN) {
+      const email = (url.searchParams.get('email') || 'dev@example.com').toLowerCase();
+      return redirect(res, '/?sync=signed_in', { 'Set-Cookie': startSession(loginUser('dev:' + email, email)) });
+    }
+    if (p.startsWith('/api/')) {
+      if (req.method !== 'GET' && req.headers['x-bayad'] !== '1') return send(res, 403, { error: 'forbidden' });
+      if (p === '/api/me' && req.method === 'GET') {
+        const u = currentUser(req);
+        return send(res, 200, { configured: !!CLIENT_ID || DEV_LOGIN, signedIn: !!u, email: u ? u.email : null });
+      }
+      if (p === '/api/logout' && req.method === 'POST') {
+        const t = cookies(req).bayad_session; if (t) q.dropSession.run(sha(t));
+        return send(res, 200, { ok: true }, { 'Set-Cookie': cookie('bayad_session', '', 0) });
+      }
+      if (p === '/api/sync' && req.method === 'POST') {
+        const u = currentUser(req);
+        if (!u) return send(res, 401, { error: 'signed_out' });
+        let body; try { body = JSON.parse(await readBody(req) || '{}'); } catch (e) { return send(res, e.status || 400, { error: 'bad_request' }); }
+        return send(res, 200, sync(u, body));
+      }
+      return send(res, 404, { error: 'not_found' });
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, 'Method not allowed');
+    return serveStatic(req, res, p);
+  } catch (e) {
+    console.error('[bayad]', e);
+    if (!res.headersSent) send(res, 500, { error: 'server_error' });
+  }
+});
+server.listen(PORT, () => console.log(`[bayad] listening on :${PORT} (public URL ${PUBLIC_URL})`));

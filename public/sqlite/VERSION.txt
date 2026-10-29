@@ -1,0 +1,1 @@
+SQLite WASM 3.53.4-build2 from npm @sqlite.org/sqlite-wasm (Apache-2.0 wrapper; SQLite is public domain).
