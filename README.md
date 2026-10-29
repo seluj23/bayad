@@ -60,3 +60,7 @@ node server.js                       # http://localhost:3000, sign-in disabled
 DEV_FAKE_LOGIN=1 node server.js      # adds /auth/dev?email=you@example.com for testing sync. Never use in production.
 ```
 Requires Node 22 or newer (uses the built-in `node:sqlite`). No npm install needed.
+
+## License
+
+MIT. See [LICENSE](LICENSE). The bundled SQLite build in `public/sqlite/` keeps its own terms: SQLite is public domain, and the `@sqlite.org/sqlite-wasm` wrapper is Apache-2.0.
