@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Privacy Policy</title>
+<meta name="description" content="How Bayad Tracker handles your data.">
+<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@600;700&family=IBM+Plex+Sans:wght@400;600&display=swap">
+<link rel="stylesheet" href="/pages.css">
+</head>
+<body>
+<div class="wrap">
+  <a class="brand" href="/about"><img src="/icons/logo-120.png" alt="" width="40" height="40">Bayad Tracker</a>
+  <h1>Privacy Policy</h1>
+  <p class="muted">Effective October 30, 2026</p>
+
+  <p>This policy covers Bayad Tracker ("Bayad") as run at <b>{{SITE}}</b>. Bayad is open-source software, so other people may run their own copies. Each copy is responsible for its own data, and this policy only covers this one.</p>
+
+  <h2>If you don't sign in</h2>
+  <p>Your bills, income and loans are saved in a database inside your browser on your own device. None of it is sent to our server. Clearing your browser data or uninstalling the app deletes it, so download a backup from the app now and then.</p>
+
+  <h2>If you sign in with Google</h2>
+  <p>Signing in is optional and only used to sync your entries between devices. When you sign in, Google shares the following with Bayad:</p>
+  <ul>
+    <li>your email address, and whether Google has verified it</li>
+    <li>a Google account ID that stays the same each time you sign in</li>
+  </ul>
+  <p>Bayad requests only the <code>openid</code> and <code>email</code> permissions. It does not receive your name, photo, contacts, Gmail, Drive files or any other Google data, and it never gets your Google password.</p>
+  <p>Once you're signed in, the server stores:</p>
+  <ul>
+    <li><b>Your account:</b> your email address, your Google account ID, and when you first signed in.</li>
+    <li><b>Your synced entries:</b> the bills, income and loans you enter, including amounts, dates, notes and any names you type (for example, the friend who owes you money). When you delete an entry, its contents are removed and only its ID and deletion time are kept so the deletion can sync to your other devices.</li>
+    <li><b>Sign-in sessions:</b> a hashed copy of your session token and when it expires (after 180 days).</li>
+  </ul>
+
+  <h2>How your information is used</h2>
+  <p>Your email and Google account ID are used only to sign you in and keep your entries separate from other people's. Your entries are used only to sync them back to your devices. We do not use your data for advertising, sell it, share it with data brokers, or use it to train AI models. There are no analytics or tracking scripts.</p>
+  <p>Bayad's use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
+
+  <h2>Cookies</h2>
+  <p>Bayad sets two cookies, both needed for sign-in:</p>
+  <ul>
+    <li><code>bayad_session</code> keeps you signed in, for up to 180 days or until you sign out.</li>
+    <li><code>bayad_oauth</code> protects the sign-in step and is deleted after about 10 minutes.</li>
+  </ul>
+
+  <h2>Other services involved</h2>
+  <ul>
+    <li><b>Google Sign-In</b>, when you choose to sign in. Google's own <a href="https://policies.google.com/privacy">Privacy Policy</a> applies there.</li>
+    <li><b>Google Fonts:</b> the app loads its fonts from Google's servers, which can see your IP address and browser details.</li>
+    <li><b>Our hosting provider</b>, which stores the server and may keep standard request logs such as IP addresses.</li>
+  </ul>
+  <p>We may disclose information if required by law.</p>
+
+  <h2>Security</h2>
+  <p>All traffic is sent over HTTPS. Session tokens are stored only as hashes. Synced entries are stored on the server without end-to-end encryption, so whoever runs the server can technically access them. Don't store information you aren't comfortable keeping there, such as bank passwords or card numbers.</p>
+
+  <h2>Keeping and deleting your data</h2>
+  <p>Synced data is kept until you ask for it to be deleted. To delete your account and all synced entries, email {{CONTACT}} from the address you signed in with, and we'll delete it within 30 days. Signing out ends your session on that device but does not delete synced data.</p>
+  <p>You can also remove Bayad's access to your Google account at any time at <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>.</p>
+
+  <h2>Children</h2>
+  <p>Bayad is not meant for children under 13, and we don't knowingly collect data from them.</p>
+
+  <h2>Changes</h2>
+  <p>If this policy changes, the new version will be posted on this page with a new effective date. If the change is significant, we'll tell signed-in users in the app.</p>
+
+  <h2>Contact</h2>
+  <p>Questions or requests: {{CONTACT}}</p>
+
+  <footer>
+    <a href="/about">About</a>
+    <a href="/terms">Terms of Service</a>
+    <a href="/">Open the app</a>
+  </footer>
+</div>
+</body>
+</html>

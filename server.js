@@ -14,6 +14,7 @@ const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const ALLOWED = (process.env.ALLOWED_EMAILS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+const CONTACT_EMAIL = (process.env.CONTACT_EMAIL || '').trim();
 const DEV_LOGIN = process.env.DEV_FAKE_LOGIN === '1'; // local testing only — never set in production
 const SECURE = PUBLIC_URL.startsWith('https://');
 const STATIC_DIR = path.join(__dirname, 'public');
@@ -22,6 +23,7 @@ const REDIRECT_URI = PUBLIC_URL + '/auth/google/callback';
 
 if (!CLIENT_ID || !CLIENT_SECRET) console.warn('[bayad] GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not set: sign-in is disabled, the app still works offline.');
 if (!ALLOWED.length) console.warn('[bayad] ALLOWED_EMAILS not set: any Google account can sign in (each gets its own separate data).');
+if (!CONTACT_EMAIL) console.warn('[bayad] CONTACT_EMAIL not set: the privacy policy and terms pages have no contact address.');
 if (DEV_LOGIN) console.warn('[bayad] DEV_FAKE_LOGIN is ON. Do not use this in production.');
 
 /* ---------- database ---------- */
@@ -188,7 +190,20 @@ function sync(user, body) {
 
 /* ---------- static files ---------- */
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
-  '.wasm': 'application/wasm', '.webmanifest': 'application/manifest+json', '.json': 'application/json', '.png': 'image/png', '.txt': 'text/plain; charset=utf-8' };
+  '.wasm': 'application/wasm', '.webmanifest': 'application/manifest+json', '.json': 'application/json', '.png': 'image/png', '.txt': 'text/plain; charset=utf-8',
+  '.css': 'text/css; charset=utf-8' };
+
+// Public pages linked from the Google sign-in consent screen. {{SITE}} and {{CONTACT}} are filled in from config.
+const PAGES = { '/about': 'about.html', '/privacy': 'privacy.html', '/terms': 'terms.html' };
+const esc = s => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+function servePage(req, res, name) {
+  fs.readFile(path.join(STATIC_DIR, name), 'utf8', (err, html) => {
+    if (err) return send(res, 404, 'Not found', { 'Content-Type': 'text/plain' });
+    const contact = CONTACT_EMAIL ? `<a href="mailto:${esc(CONTACT_EMAIL)}">${esc(CONTACT_EMAIL)}</a>` : 'the person who runs this site';
+    const body = html.replaceAll('{{SITE}}', esc(new URL(PUBLIC_URL).host)).replaceAll('{{CONTACT}}', contact);
+    send(res, 200, req.method === 'HEAD' ? '' : body, { 'Content-Type': TYPES['.html'], 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' });
+  });
+}
 function serveStatic(req, res, pathname) {
   let rel = decodeURIComponent(pathname);
   if (rel === '/' || !path.extname(rel)) rel = '/index.html';
@@ -235,6 +250,8 @@ const server = http.createServer(async (req, res) => {
       return send(res, 404, { error: 'not_found' });
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, 'Method not allowed');
+    const page = PAGES[p.replace(/\.html$|\/$/, '')];
+    if (page) return servePage(req, res, page);
     return serveStatic(req, res, p);
   } catch (e) {
     console.error('[bayad]', e);

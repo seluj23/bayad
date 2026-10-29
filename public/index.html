@@ -189,6 +189,7 @@ a.btn{text-decoration:none;display:inline-flex;align-items:center}
       <button class="btn primary" data-action="install">Install app</button>
     </div>
     <p id="iosinstall" hidden>To install on iPhone: open this page in Safari, tap Share, then <b>Add to Home Screen</b>.</p>
+    <p class="hint"><a href="/about">About Bayad</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a></p>
   </section>
 </div>
 <div id="toast" class="toast" hidden></div>
@@ -626,8 +627,9 @@ function renderSync(){
       box.innerHTML = SYNC.signedIn
         ? '<p>Signed in as <b>'+esc(SYNC.email||'')+'</b>. '+(SYNC.busy?'Syncing…':SYNC.err?'Last sync failed; it will retry.':SYNC.last?'Last synced '+ago(SYNC.last)+'.':'Not synced yet.')+'</p>'+
           '<div class="inline"><button class="btn" data-action="sync-now"'+(off||SYNC.busy?' disabled':'')+'>Sync now</button><button class="btn ghost" data-action="sign-out"'+(off?' disabled':'')+'>Sign out</button></div>'
-        : '<p>Sign in to keep your entries in sync across your phone and other devices. They’re stored on your own server.</p>'+
-          (off?'<p class="hint">Connect to the internet to sign in.</p>':'<div class="inline"><a class="btn primary" href="/auth/google">Sign in with Google</a></div>');
+        : '<p>Sign in to keep your entries in sync across your phone and other devices. They’re stored on this app’s server.</p>'+
+          (off?'<p class="hint">Connect to the internet to sign in.</p>':'<div class="inline"><a class="btn primary" href="/auth/google">Sign in with Google</a></div>'+
+          '<p class="hint">By signing in you agree to the <a href="/terms">Terms of Service</a> and <a href="/privacy">Privacy Policy</a>.</p>');
     }
   }
   netStatus();
