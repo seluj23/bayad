@@ -81,13 +81,12 @@ header p{margin:1px 0 0;color:var(--muted);font-size:13px}
 .go{width:16px;height:16px;color:var(--muted);flex:none}
 .alertbar .go{color:inherit}
 
-.tabs{display:grid;grid-template-columns:1fr 1fr auto;background:var(--track);border-radius:13px;padding:3px;gap:3px}
-.tabs button{border:0;background:transparent;padding:9px;border-radius:10px;font-weight:600;color:var(--muted);display:flex;justify-content:center;gap:8px;align-items:center;transition:background .15s,color .15s}
+.tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));background:var(--track);border-radius:13px;padding:3px;gap:3px}
+.tabs button{border:0;background:transparent;padding:9px 4px;border-radius:10px;font-weight:600;color:var(--muted);display:flex;justify-content:center;gap:6px;white-space:nowrap;align-items:center;transition:background .15s,color .15s}
 .tabs button[aria-selected="true"]{background:var(--surface);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.1)}
 .tabs .count{font-family:var(--f-mono);font-size:11px;line-height:18px;min-width:20px;padding:0 6px;border-radius:999px;background:var(--line);color:var(--ink)}
 .tabs [aria-selected="true"] .count{background:var(--accent);color:var(--accent-ink)}
 .tabs .count:empty{display:none}
-#tab-history{padding:9px 14px}
 .owed .v.out{color:var(--ink)}
 .sub{margin:4px 0 0}
 .facts.pays{color:var(--ink)}
@@ -103,6 +102,33 @@ header p{margin:1px 0 0;color:var(--muted);font-size:13px}
 .lrow .w span{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
 .lrow .a{font-family:var(--f-mono);font-variant-numeric:tabular-nums;white-space:nowrap}
 .lrow .a.in{color:var(--accent)}
+.lrow .a.over{color:var(--danger)}
+.ledger .lrow.due{grid-template-columns:50px 1fr auto auto;align-items:center}
+.listh{margin:0;padding:12px 16px 2px;font-size:11px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+.bar.sub-bar{margin-top:6px}
+.bar.sub-bar h3{font-size:15px;font-weight:600}
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;padding:2px 10px 6px}
+.cal .dow{font-size:11px;font-weight:600;color:var(--muted);text-align:center;padding:4px 0 2px}
+.cal .day{border:0;background:none;border-radius:10px;min-height:46px;display:flex;flex-direction:column;align-items:center;gap:4px;padding:5px 0 4px;font-variant-numeric:tabular-nums}
+.cal .day .n{width:26px;height:26px;display:grid;place-items:center;border-radius:999px;font-size:14px}
+.cal .day.past .n{color:var(--muted)}
+.cal .day.today .n{background:var(--accent);color:var(--accent-ink);font-weight:700}
+.cal .day.sel{background:var(--accent-soft)}
+@media (hover:hover){.cal .day:hover{background:var(--track)}}
+.cal .dots{display:flex;gap:3px;height:6px}
+.cal i,.legend i{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--muted)}
+.cal i.due,.legend i.due{background:var(--warn)}
+.cal i.over,.legend i.over{background:var(--danger)}
+.cal i.inc,.legend i.inc{background:var(--accent)}
+.legend{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 14px;font-size:12px;color:var(--muted);padding:0 16px 12px}
+.legend span{display:inline-flex;align-items:center;gap:5px}
+.cats{padding:6px 16px 14px}
+.catrow{display:grid;grid-template-columns:1fr auto;gap:4px 10px;padding:8px 0 0}
+.catrow .cn{font-size:14px}
+.catrow .ca{font-family:var(--f-mono);font-variant-numeric:tabular-nums;font-size:14px}
+.catrow .ca small{font-family:var(--f-body);color:var(--muted);font-size:12px;margin-left:6px}
+.catrow .cb{grid-column:1/-1;height:6px;background:var(--track);border-radius:999px;overflow:hidden}
+.catrow .cb span{display:block;height:100%;background:var(--accent);border-radius:999px}
 
 #main{display:flex;flex-direction:column;gap:10px}
 .bar{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:0 2px;scroll-margin-top:16px}
@@ -223,6 +249,8 @@ details.backup > div{display:flex;flex-direction:column;gap:10px;padding-bottom:
 .foot a{color:inherit}
 
 @media (max-width:380px){
+  .tabs button{font-size:14px;gap:4px}
+  .tabs .count{min-width:18px;padding:0 5px}
   .fig .v{font-size:19px}
   .grid2{grid-template-columns:1fr}
 }
@@ -258,7 +286,7 @@ details.backup > div{display:flex;flex-direction:column;gap:10px;padding-bottom:
   <div class="tabs" role="tablist">
     <button role="tab" id="tab-out" aria-selected="true" data-action="tab" data-tab="out">Money out <span class="count" id="c-out"></span></button>
     <button role="tab" id="tab-in" aria-selected="false" data-action="tab" data-tab="in">Money in <span class="count" id="c-in"></span></button>
-    <button role="tab" id="tab-history" aria-selected="false" data-action="tab" data-tab="history">History</button>
+    <button role="tab" id="tab-history" aria-selected="false" data-action="tab" data-tab="history">Calendar</button>
   </div>
 
   <main id="main"></main>

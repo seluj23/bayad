@@ -5,7 +5,7 @@
 import sqlite3InitModule from './sqlite/sqlite3.mjs';
 
 const DB_NAME = '/bayad.sqlite3';
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const FREQS = ['monthly', 'twice', 'weekly', 'biweekly', 'quarterly', 'yearly', 'once'];
 let sqlite3, db, poolUtil, mode = 'opfs';
 
@@ -23,6 +23,7 @@ const ITEMS_TABLE = `CREATE TABLE IF NOT EXISTS items (
   paid_on     TEXT,
   paid_amount REAL,
   paid_ref    TEXT NOT NULL DEFAULT '',
+  category    TEXT NOT NULL DEFAULT '',
   note        TEXT NOT NULL DEFAULT '',
   example     INTEGER NOT NULL DEFAULT 0,
   created     TEXT,
@@ -130,6 +131,7 @@ function ensureSchema(d) {
   }
   const addCols = (t, cols) => { const have = d.selectValues(`SELECT name FROM pragma_table_info('${t}')`); for (const [c, def] of cols) if (!have.includes(c)) d.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`); };
   addCols('item_months', [['amount', 'REAL'], ['ref', "TEXT NOT NULL DEFAULT ''"]]);
+  addCols('items', [['category', "TEXT NOT NULL DEFAULT ''"]]); // v3 -> v4
   addCols('loans', [['dir', "TEXT NOT NULL DEFAULT 'in'"]]);
   addCols('loan_payments', [['ref', "TEXT NOT NULL DEFAULT ''"]]);
   d.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
@@ -176,6 +178,7 @@ function childMaps(d = db) {
 }
 function itemObj(r, byItem) {
   const o = { id: r.id, dir: r.dir, name: r.name, amount: r.amount, freq: r.freq, note: r.note, created: r.created };
+  if (r.category) o.category = r.category;
   if (r.example) o.example = true;
   if (r.freq === 'once') {
     o.dueDate = r.due_date;
@@ -206,14 +209,14 @@ function readAll(d = db) {
 const n = v => (v === undefined || v === '' ? null : v);
 function writeItem(b, stamp = now(), dirty = 1) {
   db.exec({
-    sql: `INSERT INTO items (id,dir,name,amount,freq,due_day,due_day2,due_date,start_month,paid_on,paid_amount,paid_ref,note,example,created,updated_at,deleted,dirty)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)
+    sql: `INSERT INTO items (id,dir,name,amount,freq,due_day,due_day2,due_date,start_month,paid_on,paid_amount,paid_ref,category,note,example,created,updated_at,deleted,dirty)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)
           ON CONFLICT(id) DO UPDATE SET dir=excluded.dir,name=excluded.name,amount=excluded.amount,freq=excluded.freq,
           due_day=excluded.due_day,due_day2=excluded.due_day2,due_date=excluded.due_date,start_month=excluded.start_month,
-          paid_on=excluded.paid_on,paid_amount=excluded.paid_amount,paid_ref=excluded.paid_ref,
+          paid_on=excluded.paid_on,paid_amount=excluded.paid_amount,paid_ref=excluded.paid_ref,category=excluded.category,
           note=excluded.note,example=excluded.example,updated_at=excluded.updated_at,deleted=0,dirty=excluded.dirty`,
     bind: [b.id, b.dir === 'in' ? 'in' : 'out', b.name || '', n(b.amount), FREQS.includes(b.freq) ? b.freq : 'monthly',
-      n(b.dueDay), n(b.dueDay2), n(b.dueDate), n(b.startMonth), n(b.paidOn), n(b.paidAmount), b.paidRef || '',
+      n(b.dueDay), n(b.dueDay2), n(b.dueDate), n(b.startMonth), n(b.paidOn), n(b.paidAmount), b.paidRef || '', String(b.category || '').slice(0, 40),
       b.note || '', b.example ? 1 : 0, b.created || now(), stamp, dirty]
   });
   db.exec({ sql: 'DELETE FROM item_months WHERE item_id = ?', bind: [b.id] });

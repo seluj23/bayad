@@ -33,6 +33,12 @@ const byWeek = b => b.freq==='weekly'||b.freq==='biweekly';
 const byDate = f => f==='weekly'||f==='biweekly'||f==='quarterly'||f==='yearly'||f==='once'; // set with a date picker
 const payOf = v => typeof v==='string'?{on:v}:(v||{}); // a paid period is a date, or {on, amount, ref}
 const owes = l => l.dir==='out';
+const CATS={
+  out:[['utilities','Utilities'],['housing','Rent & housing'],['internet','Internet & phone'],['subscriptions','Subscriptions'],['credit','Credit cards & loans'],
+    ['insurance','Insurance'],['transport','Transport'],['food','Food & groceries'],['education','School'],['health','Health'],['family','Family support'],['other','Other']],
+  in:[['salary','Salary'],['business','Business & freelance'],['allowance','Allowance'],['remittance','Remittance'],['other','Other income']]
+};
+const catName=(dir,k)=>{ const c=CATS[dir==='in'?'in':'out'].find(x=>x[0]===k); return c?c[1]:(dir==='in'?'Other income':'Uncategorized'); };
 function kindFor(diff){ return diff<0?'overdue':diff<=3?'soon':'later'; }
 function dueLabel(diff){
   if(diff<0) return (-diff)+(diff===-1?' day':' days')+' overdue';
@@ -86,13 +92,14 @@ function ledger(){
   const out=[];
   S.bills.forEach(b=>{
     const dir=dirOf(b), type=dir==='in'?'Income':'Bill';
-    if(b.freq==='once'){ if(b.paidOn) out.push({date:b.paidOn,dir,amount:b.paidAmount??b.amount,name:b.name,what:type,ref:b.paidRef||''}); return; }
-    Object.entries(b.paid||{}).forEach(([k,v])=>{ const p=payOf(v); if(p.on) out.push({date:p.on,dir,amount:p.amount??b.amount,name:b.name,what:type+' · '+periodLabel(b,k),ref:p.ref||''}); });
+    const cat=catName(dir,b.category);
+    if(b.freq==='once'){ if(b.paidOn) out.push({date:b.paidOn,dir,amount:b.paidAmount??b.amount,name:b.name,what:type,cat,ref:b.paidRef||''}); return; }
+    Object.entries(b.paid||{}).forEach(([k,v])=>{ const p=payOf(v); if(p.on) out.push({date:p.on,dir,amount:p.amount??b.amount,name:b.name,what:type+' · '+periodLabel(b,k),cat,ref:p.ref||''}); });
   });
   S.loans.forEach(l=>{
     const o=owes(l);
-    if(l.lentDate) out.push({date:l.lentDate,dir:o?'in':'out',amount:l.amount,name:l.friend,what:o?'Borrowed':'Lent',ref:''});
-    (l.payments||[]).forEach(p=>out.push({date:p.date,dir:o?'out':'in',amount:p.amount,name:l.friend,what:o?'You paid back':'Paid you back',ref:p.ref||''}));
+    if(l.lentDate) out.push({date:l.lentDate,dir:o?'in':'out',amount:l.amount,name:l.friend,what:o?'Borrowed':'Lent',cat:'Loans',ref:''});
+    (l.payments||[]).forEach(p=>out.push({date:p.date,dir:o?'out':'in',amount:p.amount,name:l.friend,what:o?'You paid back':'Paid you back',cat:'Loans',ref:p.ref||''}));
   });
   return out.filter(x=>x.date).sort((a,b)=>b.date.localeCompare(a.date));
 }
@@ -107,7 +114,7 @@ function render(){
   document.getElementById('c-out').textContent=(openBills('out')+openLoans('out'))||'';
   document.getElementById('c-in').textContent=(openBills('in')+openLoans('in'))||'';
   const main=document.getElementById('main');
-  main.innerHTML = S.tab==='history'?historyView():billsView(S.tab)+loansView(S.tab);
+  main.innerHTML = S.tab==='history'?calendarView():billsView(S.tab)+loansView(S.tab);
   renderSheet();
   renderNotice();
 }
@@ -207,9 +214,9 @@ function billRow(b,s){
   const facts=[], paid=[];
   if(b.freq==='once'){
     if(done) paid.push(T.Paid+' '+payLine(b.paidOn,b.paidAmount??b.amount,b.paidRef));
-    else facts.push('One time · '+fmt(s.date));
+    else facts.push('One time · '+fmt(s.date)+' · '+catName(dir,b.category));
   } else {
-    facts.push(freqText(b)); if(!done) facts.push('Next due '+fmt(s.date));
+    facts.push(freqText(b)+' · '+catName(dir,b.category)); if(!done) facts.push('Next due '+fmt(s.date));
     Object.keys(b.paid||{}).sort().reverse().slice(0,4).forEach(k=>{ const p=payOf(b.paid[k]); if(p.on) paid.push(T.Paid+' '+payLine(p.on,p.amount??b.amount,p.ref,periodLabel(b,k))); });
   }
   let acts='';
@@ -231,7 +238,9 @@ function billForm(){
   else when='<div class="field"><label for="b-date">'+(freq==='once'?(isIn?'Expected date':'Due date'):(isIn?'Next expected date':'Next due date'))+'</label><input id="b-date" name="dueDate" type="date" required value="'+esc(v.dueDate||iso(today()))+'">'+
     (freq==='once'?'':'<span class="hint">It repeats '+FREQ_SHORT[freq]+' from this date.</span>')+'</div>';
   return '<form class="editor" data-form="bill"><h3 id="sheet-h">'+(f.id?'Edit '+item:'New '+item)+'</h3>'+
-  '<div class="field"><label for="b-name">'+(isIn?'Source':'Bill')+'</label><input id="b-name" name="name" required maxlength="80" placeholder="'+(isIn?'e.g. Salary, freelance, allowance':'e.g. Meralco, PLDT, rent')+'" value="'+esc(v.name)+'"></div>'+
+  '<div class="grid2"><div class="field"><label for="b-name">'+(isIn?'Source':'Bill')+'</label><input id="b-name" name="name" required maxlength="80" placeholder="'+(isIn?'e.g. Salary, allowance':'e.g. Meralco, rent')+'" value="'+esc(v.name)+'"></div>'+
+  '<div class="field"><label for="b-cat">Category</label><select id="b-cat" name="category"><option value="">Choose…</option>'+
+    CATS[isIn?'in':'out'].map(([k,t])=>'<option value="'+k+'"'+(v.category===k?' selected':'')+'>'+t+'</option>').join('')+'</select></div></div>'+
   '<div class="grid2"><div class="field"><label for="b-amount">'+'Usual amount (₱)'+'</label><input id="b-amount" name="amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="Optional" value="'+esc(v.amount)+'"></div>'+
   '<div class="field"><label for="b-freq">Repeats</label><select id="b-freq" name="freq" data-action="freq">'+FREQ_OPTS.map(([k,t])=>'<option value="'+k+'"'+(freq===k?' selected':'')+'>'+t+'</option>').join('')+'</select></div></div>'+
   when+
@@ -320,32 +329,93 @@ function loanForm(){
   '<div class="formactions"><button type="button" class="btn" data-action="cancel-form">Cancel</button><button class="btn primary" type="submit">'+(f.id?'Save changes':(o?'Add debt':'Add loan'))+'</button></div></form>';
 }
 
-/* ---------- history ---------- */
-function historyView(){
-  const cur=ym(today()), key=S.histMonth||cur;
+/* ---------- calendar: the month at a glance, with what was paid and what's due ---------- */
+// Unpaid due dates in a month: bills and income from the shared schedule, plus loan and debt promise dates.
+function monthDues(first,last){
+  const t=today(), out=[];
+  S.bills.forEach(b=>{
+    const dir=dirOf(b);
+    BayadSchedule.unpaid(b,t,first,last,62).forEach(o=>out.push({date:o.date,key:o.key,id:b.id,kind:'bill',name:b.name,amount:b.amount,dir,cat:catName(dir,b.category),over:o.date<t}));
+  });
+  S.loans.forEach(l=>{
+    const i=loanInfo(l), pd=parseD(l.promiseDate);
+    if(i.settled||!pd||pd<first||pd>last) return;
+    out.push({date:pd,id:l.id,kind:'loan',name:l.friend,amount:i.remaining,dir:owes(l)?'out':'in',cat:'Loans',over:pd<t});
+  });
+  return out.sort((a,b)=>a.date-b.date);
+}
+function dueLabel2(x){
+  if(x.kind==='loan') return x.dir==='out'?'Pay back':'Promised to pay you';
+  if(x.dir==='in') return x.over?'Late':'Expected';
+  return x.over?'Overdue':'Due';
+}
+function calendarView(){
+  const t=today(), cur=ym(t), key=S.histMonth||cur, todayIso=iso(t);
+  const [y,m]=key.split('-').map(Number), first=new Date(y,m-1,1), last=new Date(y,m,0);
+  const prevKey=ym(new Date(y,m-2,1)), nextKey=ym(new Date(y,m,1));
   const all=ledger(), inMonth=k=>all.filter(x=>x.date.slice(0,7)===k);
-  const rows=inMonth(key);
-  const [y,m]=key.split('-').map(Number), prevKey=ym(new Date(y,m-2,1)), nextKey=ym(new Date(y,m,1));
+  const rows=inMonth(key), dues=monthDues(first,last);
   const sum=(arr,d)=>arr.filter(x=>x.dir===d).reduce((a,x)=>a+(Number(x.amount)||0),0);
   const out=sum(rows,'out'), inn=sum(rows,'in'), prevOut=sum(inMonth(prevKey),'out'), net=inn-out;
   let cmp='&nbsp;';
   if(prevOut>0){ const pct=Math.round((out-prevOut)/prevOut*100); cmp=pct===0?'Same as '+monthName(prevKey):Math.abs(pct)+'% '+(pct>0?'more':'less')+' than '+monthName(prevKey); }
-  const title=new Date(y,m-1,1).toLocaleDateString('en-PH',{month:'long',year:'numeric'});
-  let h='<div class="bar"><h2>History</h2><button class="btn soft small" data-action="export-csv">Download CSV</button></div>';
+  const title=first.toLocaleDateString('en-PH',{month:'long',year:'numeric'});
+  const sel=S.calDay&&S.calDay.slice(0,7)===key?S.calDay:null;
+
+  // Month grid with up to four dots a day.
+  const byDay={};
+  const add=(d,cls)=>{ (byDay[d]||(byDay[d]=[])).push(cls); };
+  rows.forEach(x=>add(x.date,'paid'));
+  dues.forEach(x=>add(iso(x.date),x.dir==='in'?'inc':x.over?'over':'due'));
+  let grid='<div class="cal" role="group" aria-label="'+title+'">'+['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=>'<span class="dow">'+d.slice(0,1)+'</span>').join('');
+  for(let i=0;i<first.getDay();i++) grid+='<span></span>';
+  for(let d=1;d<=last.getDate();d++){
+    const di=key+'-'+pad(d), dots=byDay[di]||[];
+    const cls=(di===todayIso?' today':'')+(di===sel?' sel':'')+(di<todayIso?' past':'');
+    const label=fmtShort(new Date(y,m-1,d))+(dots.length?': '+plural(dots.length,'item','items'):'');
+    grid+='<button class="day'+cls+'" data-action="pick-day" data-day="'+di+'" aria-label="'+label+'"'+(di===sel?' aria-pressed="true"':'')+'><span class="n">'+d+'</span><span class="dots">'+
+      dots.slice(0,4).map(c=>'<i class="'+c+'"></i>').join('')+'</span></button>';
+  }
+  grid+='</div><div class="legend"><span><i class="paid"></i>Paid</span><span><i class="due"></i>Due</span><span><i class="over"></i>Overdue</span><span><i class="inc"></i>Money in</span></div>';
+
+  let h='<div class="bar"><h2>Calendar</h2><button class="btn soft small" data-action="export-csv">Download CSV</button></div>';
   h+='<div class="panel">'+
     '<div class="monthnav"><button class="btn ghost" data-action="hist-month" data-month="'+prevKey+'" aria-label="Previous month">‹</button><b>'+title+'</b>'+
-    '<button class="btn ghost" data-action="hist-month" data-month="'+nextKey+'" aria-label="Next month"'+(key>=cur?' disabled':'')+'>›</button></div>'+
+    '<button class="btn ghost" data-action="hist-month" data-month="'+nextKey+'" aria-label="Next month">›</button></div>'+grid+
     '<div class="cols totals"><div class="fig"><span class="k">Money out</span><span class="v">'+money(out)+'</span><span class="s">'+cmp+'</span></div>'+
-    '<div class="fig in"><span class="k">Money in</span><span class="v">'+money(inn)+'</span><span class="s">Net '+(net<0?'−':'+')+money(Math.abs(net))+'</span></div></div>';
-  if(!rows.length) h+='<div class="empty"><strong>Nothing recorded</strong>Payments you record in '+monthName(key)+' show up here.</div>';
-  else h+='<ul class="list ledger">'+rows.map(x=>'<li class="lrow"><span class="d">'+fmtShort(parseD(x.date))+'</span><span class="w"><b>'+esc(x.name)+'</b><span>'+esc(x.what)+(x.ref?' · '+esc(x.ref):'')+'</span></span>'+
-    '<span class="a '+x.dir+'">'+(x.dir==='in'?'+':'−')+(x.amount!=null&&x.amount!==''?money(x.amount):'—')+'</span></li>').join('')+'</ul>';
-  return h+'</div>';
+    '<div class="fig in"><span class="k">Money in</span><span class="v">'+money(inn)+'</span><span class="s">Net '+(net<0?'−':'+')+money(Math.abs(net))+'</span></div></div></div>';
+
+  // What's due and what moved: for the picked day, or the whole month.
+  const dueList=sel?dues.filter(x=>iso(x.date)===sel):dues.filter(x=>x.over||iso(x.date)>=todayIso);
+  const doneList=sel?rows.filter(x=>x.date===sel):rows;
+  const dueRow=x=>'<li class="lrow due"><span class="d">'+fmtShort(x.date)+'</span><span class="w"><b>'+esc(x.name)+'</b><span>'+dueLabel2(x)+' · '+esc(x.cat)+'</span></span>'+
+    '<span class="a'+(x.over&&x.dir==='out'?' over':x.dir==='in'?' in':'')+'">'+(x.amount!=null&&x.amount!==''?money(x.amount):'—')+'</span>'+
+    (S.readOnly?'':'<button class="btn small soft" data-action="'+(x.kind==='bill'?'pay-bill':'pay-loan')+'" data-id="'+esc(x.id)+'"'+(x.key?' data-key="'+esc(x.key)+'"':'')+'>Record</button>')+'</li>';
+  const doneRow=x=>'<li class="lrow"><span class="d">'+fmtShort(parseD(x.date))+'</span><span class="w"><b>'+esc(x.name)+'</b><span>'+esc(x.what)+(x.ref?' · '+esc(x.ref):'')+'</span></span>'+
+    '<span class="a '+x.dir+'">'+(x.dir==='in'?'+':'−')+(x.amount!=null&&x.amount!==''?money(x.amount):'—')+'</span></li>';
+  h+='<div class="bar sub-bar"><h3>'+(sel?fmt(parseD(sel)):(key===cur?'This month':monthName(key)))+'</h3>'+(sel?'<button class="btn ghost small" data-action="pick-day" data-day="'+sel+'">Whole month</button>':'')+'</div>';
+  h+='<div class="panel">';
+  if(!dueList.length&&!doneList.length) h+='<div class="empty"><strong>Nothing here</strong>'+(sel?'No payments or due dates on this day.':'Payments you record and upcoming due dates show up here.')+'</div>';
+  if(dueList.length) h+='<p class="listh">'+(sel?'Due':'Still to pay or receive')+'</p><ul class="list ledger">'+dueList.map(dueRow).join('')+'</ul>';
+  if(doneList.length) h+='<p class="listh">Paid and received</p><ul class="list ledger">'+doneList.map(doneRow).join('')+'</ul>';
+  h+='</div>';
+
+  // Where the money went this month.
+  const byCat={};
+  rows.filter(x=>x.dir==='out').forEach(x=>{ byCat[x.cat]=(byCat[x.cat]||0)+(Number(x.amount)||0); });
+  const cats=Object.entries(byCat).filter(c=>c[1]>0).sort((a,b)=>b[1]-a[1]);
+  if(cats.length){
+    const top=cats[0][1];
+    h+='<div class="bar sub-bar"><h3>Spending by category</h3></div><div class="panel cats">'+cats.map(([c,a])=>
+      '<div class="catrow"><span class="cn">'+esc(c)+'</span><span class="ca">'+money(a)+'<small>'+Math.round(a/out*100)+'%</small></span>'+
+      '<span class="cb" aria-hidden="true"><span style="width:'+Math.max(2,Math.round(a/top*100))+'%"></span></span></div>').join('')+'</div>';
+  }
+  return h;
 }
 function exportCsv(){
   // Prefix cells a spreadsheet would treat as a formula.
   const cell=v=>{ let s=String(v??''); if(/^[=+\-@\t\r]/.test(s)) s="'"+s; return /[",\n\r]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; };
-  const rows=[['Date','Direction','Type','Name','Amount','Reference']].concat(ledger().map(x=>[x.date,x.dir==='in'?'In':'Out',x.what,x.name,x.amount??'',x.ref]));
+  const rows=[['Date','Direction','Type','Category','Name','Amount','Reference']].concat(ledger().map(x=>[x.date,x.dir==='in'?'In':'Out',x.what,x.cat,x.name,x.amount??'',x.ref]));
   downloadBlob(new Blob(['﻿'+rows.map(r=>r.map(cell).join(',')).join('\r\n')],{type:'text/csv'}),'bayad-payments-'+iso(today())+'.csv');
   toast('Payments downloaded');
 }
@@ -370,9 +440,9 @@ function examples(){
   const t=today(), cur=ym(t), at=n=>{const x=new Date(t);x.setDate(x.getDate()+n);return x;}, d=n=>iso(at(n));
   return {
     bills:[
-      {id:'ex-electric',example:true,dir:'out',name:'Electric bill',amount:2800,freq:'monthly',dueDay:5,startMonth:cur,paid:{[cur]:{on:iso(t),amount:2950,ref:'GCash 4417'}},note:''},
-      {id:'ex-internet',example:true,dir:'out',name:'Internet',amount:1699,freq:'monthly',dueDay:at(2).getDate(),startMonth:ym(at(2)),paid:{},note:''},
-      {id:'ex-salary',example:true,dir:'in',name:'Salary',amount:15000,freq:'monthly',dueDay:at(3).getDate(),startMonth:ym(at(3)),paid:{},note:''}
+      {id:'ex-electric',example:true,dir:'out',category:'utilities',name:'Electric bill',amount:2800,freq:'monthly',dueDay:5,startMonth:cur,paid:{[cur]:{on:iso(t),amount:2950,ref:'GCash 4417'}},note:''},
+      {id:'ex-internet',example:true,dir:'out',category:'internet',name:'Internet',amount:1699,freq:'monthly',dueDay:at(2).getDate(),startMonth:ym(at(2)),paid:{},note:''},
+      {id:'ex-salary',example:true,dir:'in',category:'salary',name:'Salary',amount:15000,freq:'monthly',dueDay:at(3).getDate(),startMonth:ym(at(3)),paid:{},note:''}
     ],
     loans:[{id:'ex-loan',example:true,friend:'Marco',amount:1500,lentDate:d(-19),promiseDate:d(-4),payments:[{amount:500,date:d(-9)}],note:'For his phone repair'}]
   };
@@ -415,7 +485,8 @@ document.addEventListener('click',e=>{
   }
   if(a==='toggle'){ S.open=S.open===id?null:id; S.confirmDel=null; render(); return; }
   if(a==='goto-settings'){ document.getElementById('settings').scrollIntoView({behavior:'smooth',block:'start'}); return; }
-  if(a==='hist-month'){ S.histMonth=el.dataset.month; render(); return; }
+  if(a==='hist-month'){ S.histMonth=el.dataset.month; S.calDay=null; render(); return; }
+  if(a==='pick-day'){ S.calDay=S.calDay===el.dataset.day?null:el.dataset.day; render(); return; }
   if(a==='export-csv'){ exportCsv(); return; }
   if(a==='new-bill'){ S.form={type:'bill',dir:el.dataset.dir||'out',values:{freq:'monthly'}}; render(); return; }
   if(a==='new-loan'){ S.form={type:'loan',dir:el.dataset.dir||'in',values:{}}; render(); return; }
@@ -432,7 +503,7 @@ document.addEventListener('click',e=>{
   if(a==='del-loan'){ S.confirmDel=null; remove('loans',id); toast('Record deleted'); return; }
   if(a==='pay-bill'){
     const b=find('bills',id), s=billStatus(b);
-    S.form={type:'pay',kind:'bill',id,key:s.key,values:{amount:b.amount??'',date:iso(today()),ref:''},_focused:b.amount!=null}; render(); return;
+    S.form={type:'pay',kind:'bill',id,key:el.dataset.key||s.key,values:{amount:b.amount??'',date:iso(today()),ref:''},_focused:b.amount!=null}; render(); return;
   }
   if(a==='pay-loan'){
     const l=find('loans',id), i=loanInfo(l);
@@ -473,7 +544,7 @@ document.addEventListener('submit',e=>{
   if(kind==='bill'){
     const v=readForm(form); const f=S.form;
     const base=f.id?clone(find('bills',f.id)):{id:uid(),created:new Date().toISOString(),paid:{}};
-    base.dir=f.dir||'out'; base.name=v.name.trim(); base.amount=v.amount===''?null:Number(v.amount); base.freq=v.freq; base.note=(v.note||'').trim();
+    base.dir=f.dir||'out'; base.name=v.name.trim(); base.amount=v.amount===''?null:Number(v.amount); base.freq=v.freq; base.note=(v.note||'').trim(); base.category=v.category||'';
     delete base.dueDay; delete base.dueDay2; delete base.dueDate;
     if(base.freq==='monthly'||base.freq==='twice'){
       base.dueDay=clampDay(v.dueDay);
