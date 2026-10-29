@@ -1,9 +1,10 @@
 // Bayad service worker: serves the app from cache so it opens with no internet.
 // Bump VERSION whenever you change index.html or other app files.
-const VERSION = 'bayad-v9';
+const VERSION = 'bayad-v10';
 const APP_SHELL = [
   './',
   './index.html',
+  './app.js',
   './manifest.webmanifest',
   './db-worker.js',
   './schedule.js',

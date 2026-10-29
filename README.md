@@ -74,6 +74,13 @@ DEV_FAKE_LOGIN=1 node server.js      # adds /auth/dev?email=you@example.com for 
 ```
 Requires Node 22 or newer (uses the built-in `node:sqlite`). No npm install needed.
 
+## Tests
+
+```
+npm test
+```
+Runs the checks in `test/` with Node's built-in test runner: due-date rules, reminder encryption and calendar output, and a real server process covering sync, limits, account deletion and security headers. GitHub runs them on every push (`.github/workflows/test.yml`), along with a Docker build.
+
 ## License
 
 MIT. See [LICENSE](LICENSE). The bundled SQLite build in `public/sqlite/` keeps its own terms: SQLite is public domain, and the `@sqlite.org/sqlite-wasm` wrapper is Apache-2.0.

@@ -1,0 +1,11 @@
+{
+  "name": "bayad",
+  "private": true,
+  "description": "Bills, income and loans tracker. No dependencies: run with node server.js.",
+  "license": "MIT",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test --disable-warning=ExperimentalWarning \"test/*.test.js\""
+  }
+}

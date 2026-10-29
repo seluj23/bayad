@@ -239,6 +239,34 @@ function sync(user, body) {
   };
 }
 
+/* ---------- security headers ---------- */
+// Scripts only from this site ('wasm-unsafe-eval' lets the SQLite WebAssembly start). Styles allow inline
+// because the page uses <style> and a few style="" attributes. Fonts come from Google Fonts, which the
+// service worker also fetches, hence connect-src.
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'wasm-unsafe-eval'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src https://fonts.gstatic.com",
+  "connect-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com",
+  "img-src 'self' data:",
+  "worker-src 'self'",
+  "manifest-src 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+function securityHeaders(res) {
+  res.setHeader('Content-Security-Policy', CSP);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  if (SECURE) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+}
+
 /* ---------- static files ---------- */
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.wasm': 'application/wasm', '.webmanifest': 'application/manifest+json', '.json': 'application/json', '.png': 'image/png', '.txt': 'text/plain; charset=utf-8',
@@ -274,6 +302,7 @@ function serveStatic(req, res, pathname) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, PUBLIC_URL);
   const p = url.pathname;
+  securityHeaders(res);
   try {
     if (p === '/healthz') return send(res, 200, { ok: true });
     const ip = clientIp(req);

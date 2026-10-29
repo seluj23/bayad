@@ -1,0 +1,31 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm test
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t bayad .
+      - name: Start the image and wait for the health check
+        run: |
+          docker run -d --name bayad -p 3000:3000 bayad
+          for i in $(seq 1 30); do curl -fs localhost:3000/healthz && exit 0; sleep 1; done
+          docker logs bayad
+          exit 1
