@@ -11,7 +11,10 @@
 </head>
 <body>
 <div class="wrap">
-  <a class="brand" href="/about"><img src="/icons/logo-120.png" alt="" width="40" height="40">Bayad Tracker</a>
+  <header class="topbar">
+    <a class="brand" href="/about"><img src="/icons/logo-120.png" alt="" width="36" height="36">Bayad Tracker</a>
+    <a class="back" href="/">Back to app</a>
+  </header>
   <h1>Privacy Policy</h1>
   <p class="muted">Effective October 30, 2026</p>
 
@@ -45,6 +48,13 @@
     <li><code>bayad_oauth</code> protects the sign-in step and is deleted after about 10 minutes.</li>
   </ul>
 
+  <h2>Reminders</h2>
+  <p>Reminders are optional and only work while you're signed in.</p>
+  <ul>
+    <li><b>Notifications:</b> when you turn them on, your browser gives us a push address from its push service (Google, Apple, Mozilla or Microsoft, depending on your browser), along with your time zone. We use them only to send one reminder a day about what's due. The message is encrypted so the push service can't read it. Turning notifications off, signing out or deleting your account removes the push address.</li>
+    <li><b>Calendar:</b> making a calendar link creates a secret web address that lists your upcoming due dates with their names and amounts. Anyone who has the link can see them, and the calendar app you add it to (such as Google Calendar) fetches and keeps a copy under its own privacy policy. Making a new link in the app stops the old one from working. Deleting your account removes it.</li>
+  </ul>
+
   <h2>Other services involved</h2>
   <ul>
     <li><b>Google Sign-In</b>, when you choose to sign in. Google's own <a href="https://policies.google.com/privacy">Privacy Policy</a> applies there.</li>
@@ -72,8 +82,10 @@
 
   <footer>
     <a href="/about">About</a>
+    <a href="/privacy">Privacy Policy</a>
     <a href="/terms">Terms of Service</a>
-    <a href="/">Open the app</a>
+    <a href="https://github.com/seluj23/bayad">Source code</a>
+    <span>Contact: {{CONTACT}}</span>
   </footer>
 </div>
 </body>

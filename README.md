@@ -44,6 +44,15 @@ The privacy policy describes what this code does. If you change what the app col
 5. **Domains:** add your domain, container port **3000**, with HTTPS on.
 6. Deploy, then open the domain on your phone, install the app, and tap **Sign in with Google** under *Sync, backup & install*.
 
+## Reminders
+
+Signed-in people can turn on two kinds of reminders under *Sync & backup → Reminders*:
+
+- **Notifications:** standard Web Push, no Firebase or other account needed, and free. Each device that turns them on gets one message a day at 8 AM local time (`REMINDER_HOUR`) when something is due today or tomorrow, or a bill is overdue. The server creates its signing keys on first start and keeps them in `/data/vapid.json`. Keep that file: if it's lost, every device has to turn notifications on again. On iPhone, notifications only work after adding Bayad to the Home Screen (iOS 16.4 or later).
+- **Calendar:** a private `/cal/<secret>.ics` feed people add to Google Calendar, Apple Calendar or Outlook. It lists unpaid due dates with a reminder at 9 AM the day before. Calendar apps refresh it every few hours.
+
+Both use synced data, so they only cover entries that have synced to the server.
+
 ## Limits
 
 Each account can sync up to 5000 bills, income entries and loans (`MAX_RECORDS_PER_USER`). Past that, new entries stay on the phone and the app says the synced storage is full. Sign-in is limited to 30 requests a minute per address, the API to 300, and syncing to 120 per account.

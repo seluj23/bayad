@@ -203,6 +203,11 @@ details.settled .row{opacity:.7}
 .acct .avatar{width:34px;height:34px;border-radius:50%;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;font-weight:700;flex:none;text-transform:uppercase}
 .acct b{display:block;overflow-wrap:anywhere;font-size:14px}
 .tools-sync .spacer{flex:1}
+.remind{display:flex;flex-direction:column;gap:14px;border-top:1px solid var(--line);padding-top:14px}
+.rem{display:flex;flex-direction:column;gap:6px}
+.rem-h{font-weight:600;font-size:14px}
+.rem .on{font-size:11px;font-weight:700;color:var(--ok);background:var(--ok-soft);border-radius:999px;padding:1px 7px;margin-left:4px;vertical-align:1px}
+.linkbtn{border:0;background:none;padding:0;color:var(--accent);text-decoration:underline;font:inherit;cursor:pointer}
 .confirm{display:flex;flex-direction:column;gap:10px;background:var(--danger-soft);border-radius:12px;padding:12px 14px}
 .confirm b{color:var(--danger)}
 .tools .confirm p{color:var(--ink)}
@@ -287,6 +292,7 @@ details.backup > div{display:flex;flex-direction:column;gap:10px;padding-bottom:
 </div>
 <div id="toast" class="toast" hidden></div>
 
+<script src="schedule.js"></script>
 <script>
 (function(){
 const peso = new Intl.NumberFormat('en-PH',{style:'currency',currency:'PHP',maximumFractionDigits:2});
@@ -329,17 +335,7 @@ function dueLabel(diff){
   if(diff===1) return 'Due tomorrow';
   return 'Due in '+diff+' days';
 }
-// The i-th due date of a repeating entry, and the key its payment is stored under.
-function occ(b,i){
-  if(byWeek(b)){ const d=parseD(b.dueDate)||today(); d.setDate(d.getDate()+i*(b.freq==='weekly'?7:14)); return {key:iso(d),date:d}; }
-  const [sy,sm]=(b.startMonth||ym(today())).split('-').map(Number), start=sy*12+(sm-1);
-  if(b.freq==='twice'){
-    const idx=start+Math.floor(i/2), yy=Math.floor(idx/12), mm=idx%12, second=i%2===1;
-    return {key:yy+'-'+pad(mm+1)+'-'+(second?'b':'a'),date:dueIn(yy,mm,Number(second?b.dueDay2:b.dueDay)||1)};
-  }
-  const idx=start+i*(MONTH_STEP[b.freq]||1), yy=Math.floor(idx/12), mm=idx%12;
-  return {key:yy+'-'+pad(mm+1),date:dueIn(yy,mm,Number(b.dueDay)||1)};
-}
+const occ = (b,i) => BayadSchedule.occ(b,i,today()); // shared with the server, see schedule.js
 function billStatus(b){
   const t=today();
   if(b.freq==='once'){
@@ -651,6 +647,10 @@ function exportCsv(){
 
 /* ---------- storage: SQLite database on this device ---------- */
 const worker=new Worker('db-worker.js',{type:'module'});
+// Leaving the page (e.g. to About inside the installed app) must free the database file. Otherwise iOS keeps
+// this page suspended with the file locked, and the page you come back to can't open it.
+window.addEventListener('pagehide',()=>{ try{ worker.terminate(); }catch(_){} });
+window.addEventListener('pageshow',e=>{ if(e.persisted) location.reload(); });
 let reqId=0; const pending=new Map();
 worker.onmessage=e=>{ const {id,ok,result,error}=e.data; const p=pending.get(id); if(!p) return; pending.delete(id); ok?p.res(result):p.rej(new Error(error)); };
 worker.onerror=()=>{ S.storageError='failed'; S.loaded={bills:true,loans:true}; render(); };
@@ -880,6 +880,7 @@ async function syncNow(){
   SYNC.busy=false; renderSync();
 }
 async function signOut(){
+  await disablePush(true);
   try{ await fetch('/api/logout',{method:'POST',credentials:'same-origin',headers:{'X-Bayad':'1'}}); }catch(_){}
   try{ await call('resetSync'); }catch(_){}
   SYNC.signedIn=false; SYNC.email=null; SYNC.last=null; rememberSync(); renderSync();
@@ -897,6 +898,7 @@ async function deleteAccount(){
     return;
   }
   const erase=SYNC.eraseLocal;
+  pushSub().then(s=>s&&s.unsubscribe()).catch(()=>{}); REM.pushOn=false; REM.cal=null; REM.calOpen=false;
   try{
     if(erase){ const d=await call('replaceAll',{bills:[],loans:[]}); S.bills=d.bills; S.loans=d.loans; render(); }
     await call('resetSync');
@@ -904,6 +906,79 @@ async function deleteAccount(){
   Object.assign(SYNC,{busy:false,signedIn:false,email:null,last:null,confirmDelete:false,eraseLocal:false}); rememberSync(); renderSync();
   toast(erase?'Account deleted, and this phone was erased.':'Account deleted. Your entries stay on this phone.');
 }
+/* ---------- reminders: notifications and calendar ---------- */
+const REM={pushOn:false,cal:null,calOpen:false,busy:false};
+const pushSupported=()=>'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const tzName=()=>{ try{ return Intl.DateTimeFormat().resolvedOptions().timeZone||''; }catch(_){ return ''; } };
+const post=(path,body)=>fetch(path,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Bayad':'1'},body:JSON.stringify(body||{})});
+const b64u=s=>Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')+'==='.slice((s.length+3)%4)),c=>c.charCodeAt(0));
+async function pushSub(){ if(!pushSupported()) return null; try{ return await (await navigator.serviceWorker.ready).pushManager.getSubscription(); }catch(_){ return null; } }
+async function checkPush(){
+  const s=await pushSub();
+  REM.pushOn=!!s && Notification.permission==='granted';
+  // Re-register so the server has this device's current time zone and the right account.
+  if(REM.pushOn && SYNC.signedIn && navigator.onLine) post('/api/push/subscribe',{subscription:s.toJSON(),tz:tzName()}).catch(()=>{});
+  renderSync();
+}
+async function enablePush(){
+  if(REM.busy) return; REM.busy=true; renderSync();
+  try{
+    const perm=await Notification.requestPermission();
+    if(perm!=='granted') throw new Error(perm==='denied'?'blocked':'dismissed');
+    const {key}=await (await fetch('/api/push/key',{cache:'no-store'})).json();
+    const reg=await navigator.serviceWorker.ready;
+    const s=await reg.pushManager.getSubscription() || await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64u(key)});
+    if(!(await post('/api/push/subscribe',{subscription:s.toJSON(),tz:tzName()})).ok) throw new Error('server');
+    REM.pushOn=true; toast('Reminders on. You’ll get one at 8 AM when something is due.');
+  }catch(e){
+    toast(e.message==='blocked'?'Notifications are blocked for this site. Allow them in your browser or phone settings, then try again.'
+      :e.message==='dismissed'?'Notifications weren’t turned on.':'Couldn’t turn on reminders. Try again.');
+  }
+  REM.busy=false; renderSync();
+}
+async function disablePush(silent){
+  const s=await pushSub();
+  if(s){ try{ await post('/api/push/unsubscribe',{endpoint:s.endpoint}); }catch(_){} try{ await s.unsubscribe(); }catch(_){} }
+  REM.pushOn=false; renderSync();
+  if(!silent) toast('Reminders off on this device.');
+}
+async function openCalendar(reset){
+  REM.busy=true; renderSync();
+  try{
+    const r=await post('/api/calendar',{tz:tzName(),reset:!!reset}); if(!r.ok) throw 0;
+    REM.cal=(await r.json()).url; REM.calOpen=true;
+    if(reset) toast('New calendar link made. The old one no longer works.');
+  }catch(_){ toast('Couldn’t get your calendar link. Try again.'); }
+  REM.busy=false; renderSync();
+}
+function remindersHtml(off){
+  const dis=off||REM.busy?' disabled':'';
+  const ios=/iphone|ipad|ipod/i.test(navigator.userAgent), installed=window.matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;
+  let push;
+  if(!pushSupported()) push='<p class="hint">'+(ios&&!installed?'On iPhone, add Bayad to your Home Screen and open it from there to get notifications.':'This browser can’t show notifications. The calendar works everywhere.')+'</p>';
+  else if(REM.pushOn) push='<div class="inline"><button class="btn small" data-action="push-test"'+dis+'>Send a test</button><button class="btn small ghost" data-action="push-off"'+dis+'>Turn off</button></div>';
+  else push='<div class="inline"><button class="btn small soft" data-action="push-on"'+dis+'>Turn on notifications</button></div>'+
+    (Notification.permission==='denied'?'<p class="hint">Notifications are blocked for this site in your browser or phone settings.</p>':'');
+  const webcal=REM.cal?REM.cal.replace(/^https?:/,'webcal:'):'';
+  const cal=REM.calOpen&&REM.cal
+    ? '<div class="inline"><a class="btn small soft" href="https://calendar.google.com/calendar/r?cid='+encodeURIComponent(webcal)+'" target="_blank" rel="noopener">Google Calendar</a>'+
+      '<a class="btn small soft" href="'+esc(webcal)+'">Apple or Outlook</a><button class="btn small" data-action="cal-copy">Copy link</button></div>'+
+      '<p class="hint">Calendars refresh every few hours, so a bill you just paid can show for a while. Anyone with this link can see your due dates. <button class="linkbtn" data-action="cal-reset"'+dis+'>Make a new link</button></p>'
+    : '<div class="inline"><button class="btn small soft" data-action="cal-open"'+dis+'>Add to my calendar</button></div>';
+  return '<div class="remind"><b>Reminders</b>'+
+    '<div class="rem"><span class="rem-h">Notifications'+(REM.pushOn?' <span class="on">On</span>':'')+'</span><span class="hint">One message at 8 AM when a bill or payment is due today or tomorrow, or a bill is overdue.</span>'+push+'</div>'+
+    '<div class="rem"><span class="rem-h">Calendar</span><span class="hint">Your due dates in Google Calendar, Apple Calendar or Outlook, with a reminder the day before.</span>'+cal+'</div></div>';
+}
+document.addEventListener('click',e=>{
+  const el=e.target.closest('[data-action^="push-"],[data-action^="cal-"]'); if(!el) return;
+  const a=el.dataset.action;
+  if(a==='push-on') enablePush();
+  else if(a==='push-off') disablePush();
+  else if(a==='push-test') post('/api/push/test').then(r=>r.json()).then(j=>toast(j.sent?'Test sent. It should arrive in a few seconds.':'Couldn’t send a test. Turn notifications off and on again.'),()=>toast('Couldn’t send a test. Check your connection.'));
+  else if(a==='cal-open') openCalendar(false);
+  else if(a==='cal-reset') openCalendar(true);
+  else if(a==='cal-copy'){ try{ navigator.clipboard.writeText(REM.cal).then(()=>toast('Calendar link copied'),()=>fallbackCopy(REM.cal)); }catch(_){ fallbackCopy(REM.cal); } }
+});
 function renderSync(){
   const box=document.getElementById('syncbox');
   if(box){
@@ -918,7 +993,7 @@ function renderSync(){
               '<label class="check"><input type="checkbox" id="erase-local"'+(SYNC.eraseLocal?' checked':'')+'> Also erase the entries on this phone</label>'+
               '<div class="inline"><button class="btn danger-fill" data-action="delete-account"'+(off||SYNC.busy?' disabled':'')+'>'+(SYNC.busy?'Deleting…':'Delete account')+'</button><button class="btn" data-action="cancel-delete-account">Cancel</button></div></div>'
             : '<div class="inline"><button class="btn" data-action="sync-now"'+(off||SYNC.busy?' disabled':'')+'>Sync now</button><button class="btn ghost" data-action="sign-out"'+(off?' disabled':'')+'>Sign out</button>'+
-              '<span class="spacer"></span><button class="btn ghost danger" data-action="ask-delete-account"'+(off?' disabled':'')+'>Delete account</button></div>')
+              '<span class="spacer"></span><button class="btn ghost danger" data-action="ask-delete-account"'+(off?' disabled':'')+'>Delete account</button></div>'+remindersHtml(off))
         :'<p>Sign in to keep your entries in sync across your phone and other devices. They’re stored on this app’s server.</p>'+
           (off?'<p class="hint">Connect to the internet to sign in.</p>':'<div class="inline"><a class="btn primary" href="/auth/google">Sign in with Google</a></div>'+
           '<p class="hint">By signing in you agree to the <a href="/terms">Terms of Service</a> and <a href="/privacy">Privacy Policy</a>.</p>');
@@ -945,7 +1020,7 @@ document.addEventListener('change',e=>{ if(e.target.id==='erase-local') SYNC.era
 window.addEventListener('online',()=>{ checkAccount().then(()=>syncNow()); });
 document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible') syncNow(); });
 setInterval(()=>{ if(document.visibilityState==='visible') syncNow(); renderSync(); },60000);
-S.afterLoad=()=>{ checkAccount().then(()=>syncNow()); };
+S.afterLoad=()=>{ checkAccount().then(()=>{ syncNow(); if(SYNC.signedIn) checkPush(); }); };
 
 function netStatus(){
   const el=document.getElementById('netstatus');

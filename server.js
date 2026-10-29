@@ -21,6 +21,7 @@ const STATIC_DIR = path.join(__dirname, 'public');
 const SESSION_DAYS = 180;
 const MAX_RECORDS = Number(process.env.MAX_RECORDS_PER_USER || 5000); // bills, income and loans per account, including deleted ones
 const BACKUP_DIR = process.env.BACKUP_DIR || path.join(DATA_DIR, 'backups');
+const REMINDER_HOUR = Number(process.env.REMINDER_HOUR || 8); // local hour for the daily notification
 const TRUST_PROXY = process.env.TRUST_PROXY !== '0'; // read the client address from X-Forwarded-For (set by Dokploy's Traefik)
 const BACKUP_KEEP = Number(process.env.BACKUP_KEEP ?? 7); // daily snapshots to keep; 0 turns them off
 const REDIRECT_URI = PUBLIC_URL + '/auth/google/callback';
@@ -78,6 +79,7 @@ const q = {
   since: db.prepare('SELECT kind, id, data, updated_at, deleted, seq FROM records WHERE user_id = ? AND seq > ? ORDER BY seq LIMIT 2000'),
 };
 q.pruneSessions.run(new Date().toISOString());
+const reminders = require('./reminders')({ db, DATA_DIR, PUBLIC_URL, CONTACT_EMAIL, REMINDER_HOUR });
 
 /* ---------- daily backups ---------- */
 // A consistent copy of the database per day in BACKUP_DIR, keeping the newest BACKUP_KEEP.
@@ -138,6 +140,9 @@ function readBody(req, limit = 5 * 1024 * 1024) {
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
     req.on('error', reject);
   });
+}
+async function readJson(req) {
+  try { return JSON.parse(await readBody(req, 64 * 1024) || '{}'); } catch { return null; }
 }
 function currentUser(req) {
   const t = cookies(req).bayad_session;
@@ -274,6 +279,13 @@ const server = http.createServer(async (req, res) => {
     const ip = clientIp(req);
     if (p.startsWith('/auth/') && limited('auth:' + ip, 30)) return send(res, 429, 'Too many sign-in attempts. Wait a minute and try again.', { 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '60' });
     if (p.startsWith('/api/') && limited('api:' + ip, 300)) return send(res, 429, { error: 'rate_limited' }, { 'Retry-After': '60' });
+    if (p.startsWith('/cal/') && req.method === 'GET') {
+      if (limited('cal:' + ip, 60)) return send(res, 429, 'Too many requests', { 'Content-Type': 'text/plain' });
+      const m = /^\/cal\/([A-Za-z0-9_-]{20,64})\.ics$/.exec(p);
+      const body = m && reminders.calendar(m[1]);
+      if (!body) return send(res, 404, 'Not found', { 'Content-Type': 'text/plain' });
+      return send(res, 200, body, { 'Content-Type': 'text/calendar; charset=utf-8', 'Cache-Control': 'private, max-age=900' });
+    }
     if (p === '/auth/google' && req.method === 'GET') return authStart(req, res);
     if (p === '/auth/google/callback' && req.method === 'GET') return await authCallback(req, res, url);
     if (p === '/auth/dev' && DEV_LOGIN) {
@@ -289,6 +301,21 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/logout' && req.method === 'POST') {
         const t = cookies(req).bayad_session; if (t) q.dropSession.run(sha(t));
         return send(res, 200, { ok: true }, { 'Set-Cookie': cookie('bayad_session', '', 0) });
+      }
+      if (p === '/api/push/key' && req.method === 'GET') return send(res, 200, { key: reminders.publicKey });
+      if (p === '/api/calendar' || p.startsWith('/api/push/')) {
+        const u = currentUser(req);
+        if (!u) return send(res, 401, { error: 'signed_out' });
+        const body = await readJson(req);
+        if (!body) return send(res, 400, { error: 'bad_request' });
+        if (p === '/api/calendar' && req.method === 'POST') return send(res, 200, { url: reminders.calendarUrl(u.id, body.tz, !!body.reset) });
+        if (p === '/api/push/subscribe' && req.method === 'POST') {
+          const err = reminders.subscribe(u.id, body);
+          return err ? send(res, 400, { error: err }) : send(res, 200, { ok: true });
+        }
+        if (p === '/api/push/unsubscribe' && req.method === 'POST') { reminders.unsubscribe(u.id, body.endpoint); return send(res, 200, { ok: true }); }
+        if (p === '/api/push/test' && req.method === 'POST') return send(res, 200, { sent: await reminders.test(u.id) });
+        return send(res, 404, { error: 'not_found' });
       }
       if (p === '/api/delete-account' && req.method === 'POST') {
         const u = currentUser(req);
@@ -316,3 +343,4 @@ const server = http.createServer(async (req, res) => {
   }
 });
 server.listen(PORT, () => console.log(`[bayad] listening on :${PORT} (public URL ${PUBLIC_URL})`));
+reminders.start();

@@ -1,11 +1,12 @@
 // Bayad service worker: serves the app from cache so it opens with no internet.
 // Bump VERSION whenever you change index.html or other app files.
-const VERSION = 'bayad-v7';
+const VERSION = 'bayad-v9';
 const APP_SHELL = [
   './',
   './index.html',
   './manifest.webmanifest',
   './db-worker.js',
+  './schedule.js',
   './sqlite/sqlite3.mjs',
   './sqlite/sqlite3.wasm',
   './sqlite/sqlite3-opfs-async-proxy.js',
@@ -77,4 +78,20 @@ self.addEventListener('fetch', event => {
       return res;
     }))
   );
+});
+
+// Daily reminders sent by the server (see reminders.js).
+self.addEventListener('push', event => {
+  let d = {};
+  try { d = event.data ? event.data.json() : {}; } catch (e) { d = { body: event.data && event.data.text() }; }
+  event.waitUntil(self.registration.showNotification(d.title || 'Bayad', {
+    body: d.body || '', icon: 'icons/icon-192.png', tag: d.tag || 'bayad', data: { url: d.url || '/' }
+  }));
+});
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  event.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(wins => {
+    for (const w of wins) if ('focus' in w) return w.focus();
+    return self.clients.openWindow((event.notification.data && event.notification.data.url) || '/');
+  }));
 });
