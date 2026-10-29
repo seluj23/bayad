@@ -15,7 +15,7 @@ const esc = s => String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>
 const uid = () => Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 function dueIn(y,m,day){ const last=new Date(y,m+1,0).getDate(); return new Date(y,m,Math.min(day,last)); }
 
-const S = { bills:[], loans:[], tab:'out', form:null, confirmDel:null, open:null, histMonth:null, db:null, loaded:{bills:false,loans:false}, live:false, readOnly:false };
+const S = { bills:[], loans:[], tab:'out', form:null, confirmDel:null, open:null, histMonth:null, me:null, hh:null, invite:null, db:null, loaded:{bills:false,loans:false}, live:false, readOnly:false };
 try{ const t=localStorage.getItem('bayad-tab'); if(t==='in'||t==='out'||t==='history') S.tab=t; }catch(e){}
 const dirOf = b => b.dir==='in'?'in':'out';
 const plural = (n,one,many) => n+' '+(n===1?one:many);
@@ -33,6 +33,12 @@ const byWeek = b => b.freq==='weekly'||b.freq==='biweekly';
 const byDate = f => f==='weekly'||f==='biweekly'||f==='quarterly'||f==='yearly'||f==='once'; // set with a date picker
 const payOf = v => typeof v==='string'?{on:v}:(v||{}); // a paid period is a date, or {on, amount, ref}
 const owes = l => l.dir==='out';
+// Households: S.me is this person's account id, S.hh their household ({scope, name, role, members}).
+// Members can add, edit and pay shared bills; only whoever added one, or the owner, can delete it; viewers only look.
+const canEdit = b => !S.readOnly && (!b.scope || (!!S.hh && S.hh.scope===b.scope && S.hh.role!=='viewer'));
+const canDelete = b => canEdit(b) && (!b.scope || S.hh.role==='owner' || b.createdBy==null || b.createdBy===S.me);
+const who = id => { if(id==null) return ''; if(id===S.me) return 'you'; const m=S.hh&&S.hh.members.find(x=>x.id===id); return m?m.email.split('@')[0]:'a former member'; };
+const byLine = (b,by) => b.scope&&by!=null?' · by '+esc(who(by)):'';
 const CATS={
   out:[['utilities','Utilities'],['housing','Rent & housing'],['internet','Internet & phone'],['subscriptions','Subscriptions'],['credit','Credit cards & loans'],
     ['insurance','Insurance'],['transport','Transport'],['food','Food & groceries'],['education','School'],['health','Health'],['family','Family support'],['other','Other']],
@@ -150,6 +156,12 @@ function renderNotice(){
   const ex=S.bills.some(b=>b.example)||S.loans.some(l=>l.example);
   if(S.storageError==='in_use') h+='<div class="banner err">Bayad is already open in another tab or window. Close the other one, then reload this page.</div>';
   else if(S.storageError) h+='<div class="banner err">The database couldn’t be opened, so changes won’t be kept. Turn off private browsing or update your browser, then reopen the app.</div>';
+  if(S.invite){
+    const i=S.invite, what='<span><b>'+esc(i.from||'Someone')+'</b> invited you to join <b>'+esc(i.household)+'</b> as a '+esc(i.role)+'.</span>';
+    if(!S.signedIn) h+='<div class="banner">'+what+'<a class="btn small primary" href="/auth/google">Sign in to join</a></div>';
+    else if(S.hh) h+='<div class="banner">'+what+'<span>Leave '+esc(S.hh.name)+' first to join.</span><button class="btn small" data-action="hh-decline">Dismiss</button></div>';
+    else h+='<div class="banner">'+what+'<span class="inline"><button class="btn small primary" data-action="hh-join">Join</button><button class="btn small" data-action="hh-decline">Not now</button></span></div>';
+  }
   if(ex) h+='<div class="banner"><span>Entries marked <b>Example</b> show how it works. Tap the circle to record a payment, or tap a row for more.</span><button class="btn small" data-action="clear-examples">Remove</button></div>';
   n.innerHTML=h;
 }
@@ -190,7 +202,7 @@ function billsView(dir){
 function rowHtml(o){
   const open=S.open===o.id, id=esc(o.id);
   return '<li class="row'+(open?' open':'')+'"><div class="line">'+o.tick+
-    '<button class="main" data-action="toggle" data-id="'+id+'" aria-expanded="'+open+'"><span class="top"><span class="name">'+esc(o.name)+(o.example?'<span class="tag">Example</span>':'')+'</span>'+
+    '<button class="main" data-action="toggle" data-id="'+id+'" aria-expanded="'+open+'"><span class="top"><span class="name">'+esc(o.name)+(o.example?'<span class="tag">Example</span>':'')+(o.shared?'<span class="tag shared">Shared</span>':'')+'</span>'+
     '<span class="amt'+(o.inflow?' in':'')+'">'+o.amt+CHEV+'</span></span><span class="meta">'+o.meta+'</span>'+(o.extra||'')+'</button></div>'+
     (open?'<div class="more">'+(o.facts.length?'<ul class="facts">'+o.facts.map(f=>'<li>'+f+'</li>').join('')+'</ul>':'')+
       (o.paid&&o.paid.length?'<ul class="facts pays">'+o.paid.map(f=>'<li>'+f+'</li>').join('')+'</ul>':'')+
@@ -208,24 +220,26 @@ function billRow(b,s){
   const lp=b.freq!=='once'?lastPaidKey(b):null;
   const doLabel='Mark '+(b.freq==='once'?'':periodLabel(b,s.key)+' ')+T.paid;
   let tick;
-  if(S.readOnly) tick='<span class="tick'+(done?' on':'')+'">'+CHECK+'</span>';
+  if(!canEdit(b)) tick='<span class="tick'+(done?' on':'')+'">'+CHECK+'</span>';
   else if(done) tick='<button class="tick on" data-action="unpay-once" data-id="'+id+'" aria-label="Undo: '+esc(b.name)+' '+T.paid+'">'+CHECK+'</button>';
   else tick='<button class="tick'+(dir==='out'&&s.kind==='overdue'?' due':'')+'" data-action="pay-bill" data-id="'+id+'" aria-label="'+doLabel+': '+esc(b.name)+'" title="'+doLabel+'">'+CHECK+'</button>';
   const facts=[], paid=[];
   if(b.freq==='once'){
-    if(done) paid.push(T.Paid+' '+payLine(b.paidOn,b.paidAmount??b.amount,b.paidRef));
+    if(done) paid.push(T.Paid+' '+payLine(b.paidOn,b.paidAmount??b.amount,b.paidRef)+byLine(b,b.paidBy));
     else facts.push('One time · '+fmt(s.date)+' · '+catName(dir,b.category));
   } else {
     facts.push(freqText(b)+' · '+catName(dir,b.category)); if(!done) facts.push('Next due '+fmt(s.date));
-    Object.keys(b.paid||{}).sort().reverse().slice(0,4).forEach(k=>{ const p=payOf(b.paid[k]); if(p.on) paid.push(T.Paid+' '+payLine(p.on,p.amount??b.amount,p.ref,periodLabel(b,k))); });
+    Object.keys(b.paid||{}).sort().reverse().slice(0,4).forEach(k=>{ const p=payOf(b.paid[k]); if(p.on) paid.push(T.Paid+' '+payLine(p.on,p.amount??b.amount,p.ref,periodLabel(b,k))+byLine(b,p.by)); });
   }
+  if(b.scope) facts.push('Shared with '+esc(S.hh?S.hh.name:'your household')+(b.createdBy!=null?' · added by '+esc(who(b.createdBy)):''));
   let acts='';
-  if(!S.readOnly){
+  if(canEdit(b)){
     if(S.confirmDel===b.id) acts=confirmActs(id,T.item,'del-bill');
     else acts=(lp?'<button class="btn small" data-action="unpay-month" data-id="'+id+'">Undo '+periodLabel(b,lp)+'</button>':'')+
-      '<span class="spacer"></span><button class="btn small ghost" data-action="edit-bill" data-id="'+id+'">Edit</button><button class="btn small ghost" data-action="ask-del" data-id="'+id+'">Delete</button>';
+      '<span class="spacer"></span><button class="btn small ghost" data-action="edit-bill" data-id="'+id+'">Edit</button>'+
+      (canDelete(b)?'<button class="btn small ghost" data-action="ask-del" data-id="'+id+'">Delete</button>':'');
   }
-  return rowHtml({id:b.id,name:b.name,example:b.example,inflow:dir==='in',amt:b.amount?money(b.amount):'—',meta:pill+when,tick,facts,paid,note:b.note,acts});
+  return rowHtml({id:b.id,name:b.name,example:b.example,shared:!!b.scope,inflow:dir==='in',amt:b.amount?money(b.amount):'—',meta:pill+when,tick,facts,paid,note:b.note,acts});
 }
 function billForm(){
   const f=S.form, v=f.values||{}, isIn=f.dir==='in', item=isIn?'income':'bill';
@@ -244,8 +258,17 @@ function billForm(){
   '<div class="grid2"><div class="field"><label for="b-amount">'+'Usual amount (₱)'+'</label><input id="b-amount" name="amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="Optional" value="'+esc(v.amount)+'"></div>'+
   '<div class="field"><label for="b-freq">Repeats</label><select id="b-freq" name="freq" data-action="freq">'+FREQ_OPTS.map(([k,t])=>'<option value="'+k+'"'+(freq===k?' selected':'')+'>'+t+'</option>').join('')+'</select></div></div>'+
   when+
+  shareField(f,v)+
   '<div class="field"><label for="b-note">Note</label><textarea id="b-note" name="note" maxlength="300" placeholder="'+(isIn?'Where it comes from, which account it lands in':'Account number reminder, where you pay, etc.')+'">'+esc(v.note)+'</textarea></div>'+
   '<div class="formactions"><button type="button" class="btn" data-action="cancel-form">Cancel</button><button class="btn primary" type="submit">'+(f.id?'Save changes':'Add '+item)+'</button></div></form>';
+}
+// "Share with household" on the bill form. Taking a bill out of the household counts as deleting it there.
+function shareField(f,v){
+  if(!S.hh||S.hh.role==='viewer') return '';
+  const orig=f.id?find('bills',f.id):null, lock=!!(orig&&orig.scope&&!canDelete(orig));
+  const checked=v._read?v.shared==='on':!!(orig&&orig.scope);
+  return '<label class="check"><input type="checkbox" name="shared"'+(checked?' checked':'')+(lock?' disabled':'')+'> Share with '+esc(S.hh.name)+'</label>'+
+    (lock?'<span class="hint">Only the person who added it, or the owner, can take it out of the household.</span>':'');
 }
 // Record a payment: a bill/income period, or money towards a loan or debt.
 function payForm(){
@@ -390,7 +413,7 @@ function calendarView(){
   const doneList=sel?rows.filter(x=>x.date===sel):rows;
   const dueRow=x=>'<li class="lrow due"><span class="d">'+fmtShort(x.date)+'</span><span class="w"><b>'+esc(x.name)+'</b><span>'+dueLabel2(x)+' · '+esc(x.cat)+'</span></span>'+
     '<span class="a'+(x.over&&x.dir==='out'?' over':x.dir==='in'?' in':'')+'">'+(x.amount!=null&&x.amount!==''?money(x.amount):'—')+'</span>'+
-    (S.readOnly?'':'<button class="btn small soft" data-action="'+(x.kind==='bill'?'pay-bill':'pay-loan')+'" data-id="'+esc(x.id)+'"'+(x.key?' data-key="'+esc(x.key)+'"':'')+'>Record</button>')+'</li>';
+    (S.readOnly||(x.kind==='bill'&&!canEdit(find('bills',x.id)))?'':'<button class="btn small soft" data-action="'+(x.kind==='bill'?'pay-bill':'pay-loan')+'" data-id="'+esc(x.id)+'"'+(x.key?' data-key="'+esc(x.key)+'"':'')+'>Record</button>')+'</li>';
   const doneRow=x=>'<li class="lrow"><span class="d">'+fmtShort(parseD(x.date))+'</span><span class="w"><b>'+esc(x.name)+'</b><span>'+esc(x.what)+(x.ref?' · '+esc(x.ref):'')+'</span></span>'+
     '<span class="a '+x.dir+'">'+(x.dir==='in'?'+':'−')+(x.amount!=null&&x.amount!==''?money(x.amount):'—')+'</span></li>';
   h+='<div class="bar sub-bar"><h3>'+(sel?fmt(parseD(sel)):(key===cur?'This month':monthName(key)))+'</h3>'+(sel?'<button class="btn ghost small" data-action="pick-day" data-day="'+sel+'">Whole month</button>':'')+'</div>';
@@ -534,7 +557,7 @@ function fallbackCopy(msg){
 }
 document.addEventListener('keydown',e=>{ if(e.key==='Escape' && S.form){ S.form=null; render(); } });
 document.addEventListener('change',e=>{
-  if(e.target.id==='b-freq' && S.form){ S.form.values=Object.assign(readForm(e.target.form),{freq:e.target.value}); S.form._focused=true; render(); }
+  if(e.target.id==='b-freq' && S.form){ S.form.values=Object.assign(readForm(e.target.form),{freq:e.target.value,_read:true}); S.form._focused=true; render(); }
 });
 function readForm(form){ const o={}; new FormData(form).forEach((v,k)=>o[k]=v); return o; }
 const clampDay = x => Math.min(31,Math.max(1,parseInt(x,10)||1));
@@ -557,7 +580,16 @@ document.addEventListener('submit',e=>{
     } else { base.dueDate=v.dueDate; if(base.freq!=='once') base.paid=base.paid||{}; }
     delete base.example;
     const nm=base.dir==='in'?'Income':'Bill';
-    S.form=null; save('bills',base); toast(f.id?nm+' updated':nm+' added');
+    const orig=f.id?find('bills',f.id):null, lock=!!(orig&&orig.scope&&!canDelete(orig));
+    const scope=S.hh&&S.hh.role!=='viewer'?((lock?!!orig.scope:v.shared==='on')?S.hh.scope:''):(orig&&orig.scope)||'';
+    S.form=null;
+    if(!orig||(orig.scope||'')===scope){ base.scope=scope; save('bills',base); toast(f.id?nm+' updated':nm+' added'); }
+    else {
+      // Moving between personal and household: a new entry (with its payments) where it's going, the old one removed.
+      const moved=clone(base); moved.id=uid(); moved.scope=scope; delete moved.createdBy;
+      save('bills',moved); remove('bills',orig.id);
+      toast(scope?nm+' shared with '+S.hh.name:nm+' is now just yours');
+    }
   } else if(kind==='loan'){
     const v=readForm(form); const f=S.form;
     const base=f.id?clone(find('loans',f.id)):{id:uid(),created:new Date().toISOString(),payments:[]};
@@ -571,12 +603,12 @@ document.addEventListener('submit',e=>{
     if(f.kind==='bill'){
       const prev=find('bills',f.id), b=clone(prev), pw=TXT[dirOf(b)].paid;
       if(b.freq==='once'){
-        b.paidOn=date;
+        b.paidOn=date; b.paidBy=S.me;
         if(amt!=null) b.paidAmount=amt; else delete b.paidAmount;
         if(ref) b.paidRef=ref; else delete b.paidRef;
       } else {
         b.paid=Object.assign({},b.paid||{});
-        b.paid[f.key]=amt==null&&!ref?date:Object.assign({on:date},amt!=null?{amount:amt}:{},ref?{ref}:{});
+        b.paid[f.key]=amt==null&&!ref&&S.me==null?date:Object.assign({on:date},amt!=null?{amount:amt}:{},ref?{ref}:{},S.me!=null?{by:S.me}:{});
       }
       S.form=null; save('bills',b);
       toast((b.freq==='once'?'':periodLabel(b,f.key)+' ')+b.name+' marked '+pw,()=>save('bills',clone(prev)));
@@ -615,15 +647,18 @@ S.live=true; render();
 
 /* ---------- sync with your server ---------- */
 const SYNC={available:false,signedIn:false,email:null,busy:false,last:null,err:null,timer:null};
-try{ const c=JSON.parse(localStorage.getItem('bayad-sync')||'null'); if(c){ Object.assign(SYNC,{available:!!c.available,signedIn:!!c.signedIn,email:c.email||null,last:c.last?new Date(c.last):null}); } }catch(_){}
-function rememberSync(){ try{ localStorage.setItem('bayad-sync',JSON.stringify({available:SYNC.available,signedIn:SYNC.signedIn,email:SYNC.email,last:SYNC.last&&SYNC.last.toISOString()})); }catch(_){} }
+try{ const c=JSON.parse(localStorage.getItem('bayad-sync')||'null'); if(c){ Object.assign(SYNC,{available:!!c.available,signedIn:!!c.signedIn,email:c.email||null,last:c.last?new Date(c.last):null}); S.me=c.me??null; S.hh=c.hh||null; S.signedIn=SYNC.signedIn; } }catch(_){}
+function rememberSync(){ try{ localStorage.setItem('bayad-sync',JSON.stringify({available:SYNC.available,signedIn:SYNC.signedIn,email:SYNC.email,last:SYNC.last&&SYNC.last.toISOString(),me:S.me,hh:S.hh})); }catch(_){} }
 function ago(d){ if(!d) return ''; const s=Math.round((Date.now()-d.getTime())/1000); if(s<45) return 'just now'; const m=Math.round(s/60); if(m<60) return m+' min ago'; const h=Math.round(m/60); if(h<24) return h+(h===1?' hour ago':' hours ago'); return d.toLocaleDateString('en-PH',{month:'short',day:'numeric'}); }
 async function checkAccount(){
   try{
     const r=await fetch('/api/me',{cache:'no-store',credentials:'same-origin'});
     if(!r.ok || !(r.headers.get('content-type')||'').includes('application/json')) throw new Error('no api');
     const j=await r.json();
-    SYNC.available=!!j.configured; SYNC.signedIn=!!j.signedIn; SYNC.email=j.email||null; rememberSync();
+    SYNC.available=!!j.configured; SYNC.signedIn=!!j.signedIn; SYNC.email=j.email||null;
+    S.me=j.id??null; S.hh=j.household||null; S.invite=j.invite||null; S.signedIn=SYNC.signedIn; rememberSync();
+    if(/[?&]join=1/.test(S.joinParam||'')&&!S.invite) toast('That invite link has expired or was already used.');
+    S.joinParam=''; render();
   }catch(_){ /* offline or no server: keep what we knew */ }
   renderSync();
 }
@@ -639,15 +674,19 @@ async function syncNow(){
     let more=true, rounds=0;
     while(more && rounds++<20){
       const p=await call('pending');
-      const r=await fetch('/api/sync',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Bayad':'1'},body:JSON.stringify({since:p.cursor,changes:p.changes})});
-      if(r.status===401){ SYNC.signedIn=false; rememberSync(); try{ await call('resetSync'); }catch(_){} toast('You were signed out. Sign in again to keep syncing.'); break; }
+      const r=await fetch('/api/sync',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Bayad':'1'},body:JSON.stringify({cursors:p.cursors,changes:p.changes})});
+      if(r.status===401){ SYNC.signedIn=false; S.signedIn=false; S.hh=null; rememberSync(); try{ await call('resetSync'); }catch(_){} toast('You were signed out. Sign in again to keep syncing.'); break; }
       if(!r.ok) throw new Error('http '+r.status);
       const j=await r.json();
       const before=S.writeSeq||0;
-      // Changes the server turned away (account full) stay queued on this device.
+      // Changes the server turned away stay queued (account full) or are put back by the server's copy (no permission).
       const rejected=new Set((j.rejected||[]).map(c=>c.kind+':'+c.id));
       if(j.full && !SYNC.fullWarned){ SYNC.fullWarned=true; toast('Your synced storage is full, so new entries stay on this phone only. Delete old entries to make room.'); }
-      let d=await call('applyRemote',{pushed:p.changes.filter(c=>!rejected.has(c.kind+':'+c.id)).map(c=>({kind:c.kind,id:c.id,updated_at:c.updated_at})),changes:j.changes,cursor:j.cursor});
+      if((j.rejected||[]).some(c=>c.reason==='forbidden')) toast('That change to a shared bill wasn’t allowed, so it was put back.');
+      let d=await call('applyRemote',{pushed:p.changes.filter(c=>!rejected.has(c.kind+':'+c.id)).map(c=>({kind:c.kind,id:c.id,updated_at:c.updated_at})),changes:j.changes,cursors:j.cursors,scopes:j.scopes});
+      // Joined, left or was removed from a household somewhere else: refresh who's in it.
+      const shared=(j.scopes||[]).find(x=>x.shared);
+      if((shared?shared.scope:null)!==(S.hh?S.hh.scope:null) || (shared&&S.hh&&shared.role!==S.hh.role)) refreshHousehold();
       if((S.writeSeq||0)!==before) d=await call('readAll');
       applyData(d);
       more=!!j.more || (p.changes.length>0 && (await call('pending')).changes.length>0 && rounds<3);
@@ -661,7 +700,8 @@ async function signOut(){
   await disablePush(true);
   try{ await fetch('/api/logout',{method:'POST',credentials:'same-origin',headers:{'X-Bayad':'1'}}); }catch(_){}
   try{ await call('resetSync'); }catch(_){}
-  SYNC.signedIn=false; SYNC.email=null; SYNC.last=null; rememberSync(); renderSync();
+  SYNC.signedIn=false; SYNC.email=null; SYNC.last=null; S.signedIn=false; S.me=null; S.hh=null; rememberSync(); renderSync();
+  try{ applyData(await call('readAll')); }catch(_){}
   toast('Signed out. Your entries stay on this phone.');
 }
 async function deleteAccount(){
@@ -681,7 +721,8 @@ async function deleteAccount(){
     if(erase){ const d=await call('replaceAll',{bills:[],loans:[]}); S.bills=d.bills; S.loans=d.loans; render(); }
     await call('resetSync');
   }catch(_){}
-  Object.assign(SYNC,{busy:false,signedIn:false,email:null,last:null,confirmDelete:false,eraseLocal:false}); rememberSync(); renderSync();
+  Object.assign(SYNC,{busy:false,signedIn:false,email:null,last:null,confirmDelete:false,eraseLocal:false}); S.signedIn=false; S.me=null; S.hh=null; rememberSync(); renderSync();
+  try{ applyData(await call('readAll')); }catch(_){}
   toast(erase?'Account deleted, and this phone was erased.':'Account deleted. Your entries stay on this phone.');
 }
 /* ---------- reminders: notifications and calendar ---------- */
@@ -757,6 +798,93 @@ document.addEventListener('click',e=>{
   else if(a==='cal-reset') openCalendar(true);
   else if(a==='cal-copy'){ try{ navigator.clipboard.writeText(REM.cal).then(()=>toast('Calendar link copied'),()=>fallbackCopy(REM.cal)); }catch(_){ fallbackCopy(REM.cal); } }
 });
+/* ---------- household: shared bills with family or housemates ---------- */
+const HHB={busy:false,creating:false,invite:null,confirmLeave:false}; // panel state
+const ROLE={owner:'Owner',member:'Member',viewer:'Viewer'};
+const ROLE_HINT={owner:'You can invite people and change their roles.',member:'You can add, edit and pay shared bills.',viewer:'You can see shared bills but not change them.'};
+async function refreshHousehold(){
+  try{ const r=await fetch('/api/household',{cache:'no-store',credentials:'same-origin'}); if(!r.ok) return; S.hh=(await r.json()).household||null; rememberSync(); render(); renderSync(); }catch(_){}
+}
+// Run a household action, then refresh and sync (joining or leaving changes which bills this phone should have).
+async function hhAction(path,body,okMsg){
+  if(HHB.busy) return null; HHB.busy=true; renderSync();
+  let j=null;
+  try{
+    const r=await post(path,body); j=await r.json();
+    if(!r.ok) throw new Error(j.error||'failed');
+    if('household' in j){ S.hh=j.household||null; rememberSync(); }
+    if(okMsg) toast(okMsg);
+  }catch(e){
+    toast({already_member:'You’re already in a household. Leave it first.',invalid_invite:'That invite link has expired or was already used.',forbidden:'Only the owner can do that.',name_required:'Give the household a name.'}[e.message]||'That didn’t work. Try again.');
+    j=null;
+  }
+  HHB.busy=false; render(); renderSync(); syncNow();
+  return j;
+}
+function householdHtml(off){
+  const dis=off||HHB.busy?' disabled':'';
+  if(!S.hh) return '<div class="remind hh"><b>Household</b><span class="hint">Share bills with family or housemates. Everyone in the household sees the same bills and who paid them.</span>'+
+    (HHB.creating?'<form class="inline" data-form="hh-create"><input name="name" maxlength="60" required placeholder="e.g. Vivas family" aria-label="Household name"><button class="btn small primary" type="submit"'+dis+'>Create</button><button type="button" class="btn small ghost" data-action="hh-cancel">Cancel</button></form>'
+      :'<div class="inline"><button class="btn small soft" data-action="hh-new"'+dis+'>Create a household</button></div><span class="hint">Invited by someone? Open the link they sent you.</span>')+'</div>';
+  const hh=S.hh, owner=hh.role==='owner';
+  const members=hh.members.map(m=>{
+    const me=m.id===S.me;
+    const ctl=owner&&!me
+      ?'<span class="ctl"><select data-hh-role="'+m.id+'" aria-label="Role for '+esc(m.email)+'"'+dis+'>'+['member','viewer','owner'].map(r=>'<option value="'+r+'"'+(m.role===r?' selected':'')+'>'+ROLE[r]+'</option>').join('')+'</select>'+
+        '<button class="btn small ghost danger" data-action="hh-remove" data-uid="'+m.id+'"'+dis+'>Remove</button></span>'
+      :'<span class="hint">'+ROLE[m.role]+'</span>';
+    return '<li class="mem"><span class="avatar" aria-hidden="true">'+esc(m.email[0])+'</span><span class="em">'+esc(m.email)+(me?' (you)':'')+'</span>'+ctl+'</li>';
+  }).join('');
+  let invite='';
+  if(owner) invite=HHB.invite
+    ?'<div class="invite"><span class="hint">Send this link to the person you want to add as a '+HHB.invite.role+'. It works once and expires in '+HHB.invite.days+' days.</span><code>'+esc(HHB.invite.url)+'</code>'+
+      '<div class="inline"><button class="btn small soft" data-action="hh-share">'+(navigator.share?'Send link':'Copy link')+'</button><button class="btn small ghost" data-action="hh-invite-done">Done</button></div></div>'
+    :'<div class="inline"><button class="btn small soft" data-action="hh-invite" data-role="member"'+dis+'>Invite a member</button><button class="btn small ghost" data-action="hh-invite" data-role="viewer"'+dis+'>Invite a viewer</button></div>';
+  const last=hh.members.length===1;
+  const leave=HHB.confirmLeave
+    ?'<div class="confirm"><b>Leave '+esc(hh.name)+'?</b><p>Its shared bills will disappear from this phone. '+(last?'You’re the only one in it, so the household and its shared bills are deleted.':owner?'The longest-standing member becomes the owner.':'')+'</p>'+
+      '<div class="inline"><button class="btn danger-fill" data-action="hh-leave-yes"'+dis+'>Leave</button><button class="btn" data-action="hh-leave-no">Cancel</button></div></div>'
+    :'<div class="inline"><button class="btn small ghost danger" data-action="hh-leave"'+dis+'>Leave household</button></div>';
+  return '<div class="remind hh"><b>Household · '+esc(hh.name)+'</b><span class="hint">You’re '+(owner?'the owner':'a '+hh.role)+'. '+ROLE_HINT[hh.role]+'</span>'+
+    '<ul class="members">'+members+'</ul>'+invite+
+    '<label class="check"><input type="checkbox" id="hh-notify"'+(hh.notify?' checked':'')+dis+'> Notify me when someone pays a shared bill</label>'+leave+'</div>';
+}
+document.addEventListener('click',async e=>{
+  const el=e.target.closest('[data-action^="hh-"]'); if(!el) return;
+  const a=el.dataset.action;
+  if(a==='hh-new'){ HHB.creating=true; renderSync(); const i=document.querySelector('[data-form="hh-create"] input'); if(i) i.focus(); }
+  else if(a==='hh-cancel'){ HHB.creating=false; renderSync(); }
+  else if(a==='hh-invite'){ const j=await hhAction('/api/household/invite',{role:el.dataset.role}); if(j){ HHB.invite={url:j.url,days:j.days,role:el.dataset.role}; renderSync(); } }
+  else if(a==='hh-invite-done'){ HHB.invite=null; renderSync(); }
+  else if(a==='hh-share'){
+    const url=HHB.invite.url, text='Join "'+S.hh.name+'" on Bayad so we can share our bills:';
+    const copy=()=>{ try{ navigator.clipboard.writeText(url).then(()=>toast('Invite link copied'),()=>fallbackCopy(url)); }catch(_){ fallbackCopy(url); } };
+    if(navigator.share) navigator.share({title:'Bayad household invite',text,url}).catch(x=>{ if(!x||x.name!=='AbortError') copy(); }); else copy();
+  }
+  else if(a==='hh-remove'){
+    const m=S.hh.members.find(x=>x.id===Number(el.dataset.uid));
+    if(m&&confirm('Remove '+m.email+' from '+S.hh.name+'? Shared bills will disappear from their phone.')) hhAction('/api/household/remove',{userId:m.id},m.email+' removed');
+  }
+  else if(a==='hh-leave'){ HHB.confirmLeave=true; renderSync(); }
+  else if(a==='hh-leave-no'){ HHB.confirmLeave=false; renderSync(); }
+  else if(a==='hh-leave-yes'){ const name=S.hh.name; HHB.confirmLeave=false; HHB.invite=null; hhAction('/api/household/leave',{},'You left '+name); }
+  else if(a==='hh-join'){ const j=await hhAction('/api/household/join',{}); if(j){ S.invite=null; toast('You joined '+S.hh.name+'. Its shared bills are syncing.'); render(); } }
+  else if(a==='hh-decline'){ S.invite=null; render(); post('/api/household/decline').catch(()=>{}); }
+});
+document.addEventListener('submit',e=>{
+  if(e.target.dataset.form!=='hh-create') return;
+  const name=new FormData(e.target).get('name');
+  HHB.creating=false; hhAction('/api/household',{name},'Household created. Invite people from here.');
+});
+document.addEventListener('change',e=>{
+  if(e.target.id==='hh-notify') hhAction('/api/household/notify',{on:e.target.checked});
+  const uid=e.target.dataset&&e.target.dataset.hhRole;
+  if(uid){
+    const m=S.hh.members.find(x=>x.id===Number(uid)), role=e.target.value;
+    if(role==='owner'&&!confirm('Make '+m.email+' the owner? You’ll become a member.')){ e.target.value=m.role; return; }
+    hhAction('/api/household/role',{userId:m.id,role},m.email+' is now '+(role==='owner'?'the owner':'a '+role));
+  }
+});
 function renderSync(){
   const box=document.getElementById('syncbox');
   if(box){
@@ -771,7 +899,7 @@ function renderSync(){
               '<label class="check"><input type="checkbox" id="erase-local"'+(SYNC.eraseLocal?' checked':'')+'> Also erase the entries on this phone</label>'+
               '<div class="inline"><button class="btn danger-fill" data-action="delete-account"'+(off||SYNC.busy?' disabled':'')+'>'+(SYNC.busy?'Deleting…':'Delete account')+'</button><button class="btn" data-action="cancel-delete-account">Cancel</button></div></div>'
             : '<div class="inline"><button class="btn" data-action="sync-now"'+(off||SYNC.busy?' disabled':'')+'>Sync now</button><button class="btn ghost" data-action="sign-out"'+(off?' disabled':'')+'>Sign out</button>'+
-              '<span class="spacer"></span><button class="btn ghost danger" data-action="ask-delete-account"'+(off?' disabled':'')+'>Delete account</button></div>'+remindersHtml(off))
+              '<span class="spacer"></span><button class="btn ghost danger" data-action="ask-delete-account"'+(off?' disabled':'')+'>Delete account</button></div>'+remindersHtml(off)+householdHtml(off))
         :'<p>Sign in to keep your entries in sync across your phone and other devices. They’re stored on this app’s server.</p>'+
           (off?'<p class="hint">Connect to the internet to sign in.</p>':'<div class="inline"><a class="btn primary" href="/auth/google">Sign in with Google</a></div>'+
           '<p class="hint">By signing in you agree to the <a href="/terms">Terms of Service</a> and <a href="/privacy">Privacy Policy</a>.</p>');
@@ -792,8 +920,10 @@ document.addEventListener('change',e=>{ if(e.target.id==='erase-local') SYNC.era
 (function(){
   const msg={signed_in:'Signed in. Syncing your entries…',cancelled:'Sign-in cancelled.',failed:'Sign-in didn’t work. Try again.',
     not_allowed:'That Google account isn’t allowed on this server.',unverified:'That Google account’s email isn’t verified.',not_configured:'Sync isn’t set up on the server yet.'};
-  const k=new URLSearchParams(location.search).get('sync');
-  if(k){ if(msg[k]) setTimeout(()=>toast(msg[k]),300); history.replaceState(null,'',location.pathname); }
+  const qs=new URLSearchParams(location.search), k=qs.get('sync'), join=qs.get('join');
+  if(k){ if(msg[k]) setTimeout(()=>toast(msg[k]),300); }
+  if(join){ S.joinParam=location.search; if(join==='invalid') setTimeout(()=>toast('That invite link isn’t valid.'),300); }
+  if(k||join) history.replaceState(null,'',location.pathname);
 })();
 window.addEventListener('online',()=>{ checkAccount().then(()=>syncNow()); });
 document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible') syncNow(); });

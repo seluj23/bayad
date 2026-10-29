@@ -42,7 +42,7 @@ function fold(line) {
   return out.join('\r\n');
 }
 
-module.exports = function reminders({ db, DATA_DIR, PUBLIC_URL, CONTACT_EMAIL, REMINDER_HOUR = 8 }) {
+module.exports = function reminders({ db, households, DATA_DIR, PUBLIC_URL, CONTACT_EMAIL, REMINDER_HOUR = 8 }) {
   db.exec(`CREATE TABLE IF NOT EXISTS push_subs (
     endpoint TEXT PRIMARY KEY,
     user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -57,7 +57,8 @@ module.exports = function reminders({ db, DATA_DIR, PUBLIC_URL, CONTACT_EMAIL, R
   if (!cols.includes('tz')) db.exec('ALTER TABLE users ADD COLUMN tz TEXT');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_cal_token ON users(cal_token)');
   const q = {
-    records: db.prepare('SELECT kind, id, data FROM records WHERE user_id = ? AND deleted = 0'),
+    records: db.prepare('SELECT kind, id, data FROM records WHERE scope = ? AND deleted = 0'),
+    item: db.prepare("SELECT data FROM records WHERE scope = ? AND kind = 'item' AND id = ? AND deleted = 0"),
     userByToken: db.prepare('SELECT id, tz FROM users WHERE cal_token = ?'),
     calToken: db.prepare('SELECT cal_token FROM users WHERE id = ?'),
     setCal: db.prepare('UPDATE users SET cal_token = ?, tz = COALESCE(?, tz) WHERE id = ?'),
@@ -73,10 +74,30 @@ module.exports = function reminders({ db, DATA_DIR, PUBLIC_URL, CONTACT_EMAIL, R
   };
 
   /* ---------- what's due ---------- */
+  // Records from the person's own scope and their household's. Payments are separate 'pay' records,
+  // merged back into their bill here (older bills may still carry their own `paid` map).
+  function entries(userId) {
+    const items = new Map(), loans = [], pays = [];
+    for (const sc of households.scopesFor(userId)) {
+      for (const r of q.records.all(sc.scope)) {
+        let d; try { d = JSON.parse(r.data); } catch { continue; }
+        if (r.kind === 'item') items.set(sc.scope + '|' + r.id, { ...d, paid: { ...(d.paid || {}) } });
+        else if (r.kind === 'loan' && !sc.shared) loans.push({ id: r.id, d });
+        else if (r.kind === 'pay') pays.push({ scope: sc.scope, d });
+      }
+    }
+    for (const { scope, d } of pays) {
+      const b = items.get(scope + '|' + d.itemId);
+      if (!b || !d.on) continue;
+      if (d.period === 'once') b.paidOn = d.on; else b.paid[d.period] = d.on;
+    }
+    return { items: [...items.entries()].map(([k, d]) => ({ id: k.split('|')[1], kind: 'item', d })), loans: loans.map(l => ({ ...l, kind: 'loan' })) };
+  }
   function dues(userId, today, from, until) {
     const out = [];
-    for (const r of q.records.all(userId)) {
-      let d; try { d = JSON.parse(r.data); } catch { continue; }
+    const { items, loans } = entries(userId);
+    for (const r of [...items, ...loans]) {
+      const d = r.d;
       if (r.kind === 'item') {
         for (const o of Sch.unpaid(d, today, from, until, 24)) {
           out.push({ uid: `item-${r.id}-${o.key || 'once'}`, date: o.date, kind: d.dir === 'in' ? 'income' : 'bill', name: d.name || 'Bill', amount: d.amount });
@@ -211,8 +232,21 @@ module.exports = function reminders({ db, DATA_DIR, PUBLIC_URL, CONTACT_EMAIL, R
       }
     } finally { running = false; }
   }
+  // Someone in a household recorded a payment: tell the other members who want to know.
+  async function notifyPayments(user, paid) {
+    const who = user.email.split('@')[0];
+    for (const p of paid) {
+      const targets = households.notifyTargets(p.householdId, user.id);
+      if (!targets.length) continue;
+      let name = 'a shared bill';
+      try { name = JSON.parse((q.item.get(p.scope, p.data && p.data.itemId) || {}).data).name || name; } catch {}
+      const amount = p.data && p.data.amount ? ' · ' + peso(p.data.amount) : '';
+      const msg = { title: 'Bayad household', body: `${who} paid ${name}${amount}`, url: '/', tag: 'bayad-household-' + (p.data && p.data.itemId) };
+      for (const id of targets) for (const s of q.userSubs.all(id)) await send(s, msg).catch(() => {});
+    }
+  }
   function start() { setTimeout(tick, 15000).unref(); setInterval(tick, 10 * 60 * 1000).unref(); }
 
-  return { calendar, calendarUrl, publicKey: publicKey.toString('base64url'), subscribe, unsubscribe, test, start,
+  return { calendar, calendarUrl, publicKey: publicKey.toString('base64url'), subscribe, unsubscribe, test, start, notifyPayments,
     _test: { encrypt, vapidAuth, digest, tick, pushHostOk } };
 };

@@ -49,37 +49,57 @@ CREATE TABLE IF NOT EXISTS sessions (
   created    TEXT NOT NULL,
   expires    TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS records (
-  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  kind       TEXT NOT NULL CHECK (kind IN ('item','loan')),
+`);
+// Synced records belong to a scope: 'u:<user id>' for one person, 'h:<household id>' for a shared household.
+// kind: item (bill or income), loan, pay (one payment of an item for one period).
+const RECORDS_TABLE = `CREATE TABLE IF NOT EXISTS records (
+  scope      TEXT NOT NULL,
+  kind       TEXT NOT NULL CHECK (kind IN ('item','loan','pay')),
   id         TEXT NOT NULL,
   data       TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   deleted    INTEGER NOT NULL DEFAULT 0,
   seq        INTEGER NOT NULL,
-  PRIMARY KEY (user_id, kind, id)
-);
-CREATE INDEX IF NOT EXISTS records_seq ON records(user_id, seq);
-`);
+  created_by INTEGER,
+  updated_by INTEGER,
+  PRIMARY KEY (scope, kind, id)
+)`;
+const oldRecords = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='records'").get() || {}).sql || '';
+if (oldRecords.includes('user_id')) {
+  // Before households, records were keyed by user. Move each person's records into their own scope.
+  db.exec('BEGIN');
+  try {
+    db.exec(RECORDS_TABLE.replace('IF NOT EXISTS records (', 'records_v2 ('));
+    db.exec(`INSERT INTO records_v2 (scope, kind, id, data, updated_at, deleted, seq, created_by, updated_by)
+      SELECT 'u:' || user_id, kind, id, data, updated_at, deleted, seq, user_id, user_id FROM records`);
+    db.exec('DROP TABLE records');
+    db.exec('ALTER TABLE records_v2 RENAME TO records');
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+}
+db.exec(RECORDS_TABLE);
+db.exec('CREATE INDEX IF NOT EXISTS records_scope_seq ON records(scope, seq)');
 const q = {
   userBySub: db.prepare('SELECT * FROM users WHERE google_sub = ?'),
   addUser: db.prepare('INSERT INTO users (google_sub, email, created) VALUES (?, ?, ?)'),
   setEmail: db.prepare('UPDATE users SET email = ? WHERE id = ?'),
-  deleteUser: db.prepare('DELETE FROM users WHERE id = ?'), // sessions and records go with it (ON DELETE CASCADE)
+  deleteUser: db.prepare('DELETE FROM users WHERE id = ?'), // sessions, push subscriptions and memberships go with it
+  dropScope: db.prepare('DELETE FROM records WHERE scope = ?'),
   addSession: db.prepare('INSERT INTO sessions (token_hash, user_id, created, expires) VALUES (?, ?, ?, ?)'),
   session: db.prepare('SELECT u.id, u.email FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires > ?'),
   dropSession: db.prepare('DELETE FROM sessions WHERE token_hash = ?'),
   pruneSessions: db.prepare('DELETE FROM sessions WHERE expires <= ?'),
-  maxSeq: db.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM records WHERE user_id = ?'),
-  recordCount: db.prepare('SELECT COUNT(*) AS n FROM records WHERE user_id = ?'),
-  record: db.prepare('SELECT updated_at FROM records WHERE user_id = ? AND kind = ? AND id = ?'),
-  upsert: db.prepare(`INSERT INTO records (user_id, kind, id, data, updated_at, deleted, seq) VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(user_id, kind, id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at,
-    deleted = excluded.deleted, seq = excluded.seq`),
-  since: db.prepare('SELECT kind, id, data, updated_at, deleted, seq FROM records WHERE user_id = ? AND seq > ? ORDER BY seq LIMIT 2000'),
+  maxSeq: db.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM records WHERE scope = ?'),
+  recordCount: db.prepare('SELECT COUNT(*) AS n FROM records WHERE scope = ?'),
+  record: db.prepare('SELECT * FROM records WHERE scope = ? AND kind = ? AND id = ?'),
+  upsert: db.prepare(`INSERT INTO records (scope, kind, id, data, updated_at, deleted, seq, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(scope, kind, id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at, deleted = excluded.deleted,
+    seq = excluded.seq, created_by = excluded.created_by, updated_by = excluded.updated_by`),
+  since: db.prepare('SELECT * FROM records WHERE scope = ? AND seq > ? ORDER BY seq LIMIT 2000'),
 };
 q.pruneSessions.run(new Date().toISOString());
-const reminders = require('./reminders')({ db, DATA_DIR, PUBLIC_URL, CONTACT_EMAIL, REMINDER_HOUR });
+const households = require('./households')({ db, PUBLIC_URL });
+const reminders = require('./reminders')({ db, households, DATA_DIR, PUBLIC_URL, CONTACT_EMAIL, REMINDER_HOUR });
 
 /* ---------- daily backups ---------- */
 // A consistent copy of the database per day in BACKUP_DIR, keeping the newest BACKUP_KEEP.
@@ -204,39 +224,67 @@ async function authCallback(req, res, url) {
 }
 
 /* ---------- sync ---------- */
+// The app sends its changes and, per scope, the last seq it has seen ('' is the person's own data).
+// It gets back everything newer in every scope it belongs to, plus the list of those scopes.
 const ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/;
+const KINDS = new Set(['item', 'loan', 'pay']);
 function sync(user, body) {
-  const since = Number.isInteger(body.since) && body.since >= 0 ? body.since : 0;
+  const scopes = households.scopesFor(user.id), byClient = new Map(scopes.map(s => [s.client, s]));
+  const legacy = !body.cursors || typeof body.cursors !== 'object'; // apps from before households send `since`
+  const cursors = legacy ? { '': Number.isInteger(body.since) && body.since >= 0 ? body.since : 0 } : body.cursors;
   const changes = Array.isArray(body.changes) ? body.changes.slice(0, 5000) : [];
   let accepted = 0, full = false;
-  const rejected = [];
+  const rejected = [], forced = [], paid = [], seqs = {}, counts = {};
   db.exec('BEGIN IMMEDIATE');
   try {
-    let seq = q.maxSeq.get(user.id).m;
-    let count = q.recordCount.get(user.id).n;
     for (const c of changes) {
-      if (!c || (c.kind !== 'item' && c.kind !== 'loan')) continue;
-      if (typeof c.id !== 'string' || !c.id || c.id.length > 100) continue;
+      if (!c || !KINDS.has(c.kind) || typeof c.id !== 'string' || !c.id || c.id.length > 200) continue;
       if (typeof c.updated_at !== 'string' || !ISO.test(c.updated_at)) continue;
+      const sc = byClient.get(typeof c.scope === 'string' ? c.scope : '');
+      const deny = () => { rejected.push({ scope: c.scope || '', kind: c.kind, id: c.id, reason: 'forbidden' }); if (sc) forced.push([sc, c.kind, c.id]); };
+      // Not a member (any more), a viewer, or loans in a household (loans stay personal).
+      if (!sc || sc.role === 'viewer' || (sc.shared && c.kind === 'loan')) { deny(); continue; }
       const data = JSON.stringify(c.deleted ? {} : (c.data && typeof c.data === 'object' ? c.data : {}));
       if (data.length > 65536) continue;
-      const cur = q.record.get(user.id, c.kind, c.id);
+      const cur = q.record.get(sc.scope, c.kind, c.id);
       if (cur && cur.updated_at >= c.updated_at) continue; // newer (or same) version already stored
-      if (!cur) { if (count >= MAX_RECORDS) { full = true; rejected.push({ kind: c.kind, id: c.id }); continue; } count++; }
-      q.upsert.run(user.id, c.kind, c.id, data, c.updated_at, c.deleted ? 1 : 0, ++seq);
+      // In a household, only the person who added a bill, or the owner, can delete it.
+      if (sc.shared && c.kind === 'item' && c.deleted && cur && !cur.deleted && cur.created_by !== user.id && sc.role !== 'owner') { deny(); continue; }
+      if (!cur) {
+        counts[sc.scope] ??= q.recordCount.get(sc.scope).n;
+        if (counts[sc.scope] >= MAX_RECORDS) { full = true; rejected.push({ scope: c.scope || '', kind: c.kind, id: c.id, reason: 'full' }); continue; }
+        counts[sc.scope]++;
+      }
+      seqs[sc.scope] ??= q.maxSeq.get(sc.scope).m;
+      const createdBy = cur && !cur.deleted && cur.created_by ? cur.created_by : user.id;
+      q.upsert.run(sc.scope, c.kind, c.id, data, c.updated_at, c.deleted ? 1 : 0, ++seqs[sc.scope], createdBy, user.id);
       accepted++;
+      if (sc.shared && c.kind === 'pay' && !c.deleted && (!cur || cur.deleted)) paid.push({ householdId: sc.householdId, scope: sc.scope, data: c.data });
     }
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }
-  const rows = q.since.all(user.id, since);
-  return {
-    accepted,
-    full,
-    rejected,
-    cursor: rows.length ? rows[rows.length - 1].seq : Math.max(since, 0),
-    more: rows.length === 2000,
-    changes: rows.map(r => ({ kind: r.kind, id: r.id, data: r.deleted ? null : JSON.parse(r.data), updated_at: r.updated_at, deleted: !!r.deleted }))
-  };
+  if (paid.length) reminders.notifyPayments(user, paid).catch(e => console.error('[bayad] household push failed:', e.message));
+
+  const toClient = (sc, r, force) => ({ scope: sc.client, kind: r.kind, id: r.id, data: r.deleted ? null : JSON.parse(r.data),
+    updated_at: r.updated_at, deleted: !!r.deleted, createdBy: r.created_by, updatedBy: r.updated_by, ...(force ? { force: true } : {}) });
+  const out = [], next = {};
+  let more = false;
+  for (const sc of scopes) {
+    const since = Number.isInteger(cursors[sc.client]) && cursors[sc.client] >= 0 ? cursors[sc.client] : 0;
+    const rows = q.since.all(sc.scope, since);
+    rows.forEach(r => out.push(toClient(sc, r)));
+    next[sc.client] = rows.length ? rows[rows.length - 1].seq : since;
+    if (rows.length === 2000) more = true;
+  }
+  // Changes the server refused are answered with what it has, so the app puts its copy back.
+  for (const [sc, kind, id] of forced) {
+    const r = q.record.get(sc.scope, kind, id);
+    out.push(r ? toClient(sc, r, true) : { scope: sc.client, kind, id, data: null, updated_at: new Date(0).toISOString(), deleted: true, force: true });
+  }
+  const res = { accepted, full, rejected, cursors: next, more, changes: out,
+    scopes: scopes.map(sc => ({ scope: sc.client, role: sc.role, shared: sc.shared })) };
+  if (legacy) { res.cursor = next['']; res.changes = out.filter(c => c.scope === ''); }
+  return res;
 }
 
 /* ---------- security headers ---------- */
@@ -315,6 +363,12 @@ const server = http.createServer(async (req, res) => {
       if (!body) return send(res, 404, 'Not found', { 'Content-Type': 'text/plain' });
       return send(res, 200, body, { 'Content-Type': 'text/calendar; charset=utf-8', 'Cache-Control': 'private, max-age=900' });
     }
+    if (p.startsWith('/join/') && req.method === 'GET') {
+      // Household invite link: remember it, then let the app ask whether to join (after sign-in if needed).
+      const token = p.slice(6);
+      if (!/^[A-Za-z0-9_-]{20,64}$/.test(token)) return redirect(res, '/?join=invalid');
+      return redirect(res, '/?join=1', { 'Set-Cookie': cookie('bayad_join', token, 7 * 86400) });
+    }
     if (p === '/auth/google' && req.method === 'GET') return authStart(req, res);
     if (p === '/auth/google/callback' && req.method === 'GET') return await authCallback(req, res, url);
     if (p === '/auth/dev' && DEV_LOGIN) {
@@ -325,7 +379,8 @@ const server = http.createServer(async (req, res) => {
       if (req.method !== 'GET' && req.headers['x-bayad'] !== '1') return send(res, 403, { error: 'forbidden' });
       if (p === '/api/me' && req.method === 'GET') {
         const u = currentUser(req);
-        return send(res, 200, { configured: !!CLIENT_ID || DEV_LOGIN, signedIn: !!u, email: u ? u.email : null });
+        return send(res, 200, { configured: !!CLIENT_ID || DEV_LOGIN, signedIn: !!u, id: u ? u.id : null, email: u ? u.email : null,
+          household: u ? households.info(u.id) : null, invite: households.inviteInfo(cookies(req).bayad_join) });
       }
       if (p === '/api/logout' && req.method === 'POST') {
         const t = cookies(req).bayad_session; if (t) q.dropSession.run(sha(t));
@@ -346,9 +401,33 @@ const server = http.createServer(async (req, res) => {
         if (p === '/api/push/test' && req.method === 'POST') return send(res, 200, { sent: await reminders.test(u.id) });
         return send(res, 404, { error: 'not_found' });
       }
+      if (p === '/api/household' || p.startsWith('/api/household/')) {
+        const u = currentUser(req);
+        if (!u) return send(res, 401, { error: 'signed_out' });
+        if (req.method === 'GET') return p === '/api/household' ? send(res, 200, { household: households.info(u.id) }) : send(res, 404, { error: 'not_found' });
+        const body = await readJson(req);
+        if (!body) return send(res, 400, { error: 'bad_request' });
+        const done = (err, extra = {}) => err ? send(res, err === 'forbidden' ? 403 : 400, { error: err }) : send(res, 200, { ok: true, household: households.info(u.id), ...extra });
+        if (p === '/api/household') return done(households.create(u.id, body.name));
+        if (p === '/api/household/rename') return done(households.rename(u.id, body.name));
+        if (p === '/api/household/invite') { const r = households.invite(u.id, body.role); return done(r.error, r); }
+        if (p === '/api/household/join') {
+          const err = households.join(u.id, cookies(req).bayad_join);
+          if (err) return send(res, 400, { error: err });
+          return send(res, 200, { ok: true, household: households.info(u.id) }, { 'Set-Cookie': cookie('bayad_join', '', 0) });
+        }
+        if (p === '/api/household/decline') return send(res, 200, { ok: true }, { 'Set-Cookie': cookie('bayad_join', '', 0) });
+        if (p === '/api/household/role') return done(households.setRole(u.id, Number(body.userId), body.role));
+        if (p === '/api/household/remove') return done(households.remove(u.id, Number(body.userId)));
+        if (p === '/api/household/leave') return done(households.leave(u.id));
+        if (p === '/api/household/notify') { households.setNotify(u.id, !!body.on); return done(null); }
+        return send(res, 404, { error: 'not_found' });
+      }
       if (p === '/api/delete-account' && req.method === 'POST') {
         const u = currentUser(req);
         if (!u) return send(res, 401, { error: 'signed_out' });
+        households.leave(u.id); // hands the household to someone else, or removes it if they were the last one
+        q.dropScope.run('u:' + u.id);
         q.deleteUser.run(u.id);
         console.log('[bayad] account deleted: user', u.id);
         return send(res, 200, { ok: true }, { 'Set-Cookie': cookie('bayad_session', '', 0) });

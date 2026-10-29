@@ -14,9 +14,10 @@ test.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 const db = new DatabaseSync(':memory:');
 db.exec(`PRAGMA foreign_keys = ON;
   CREATE TABLE users (id INTEGER PRIMARY KEY, google_sub TEXT UNIQUE NOT NULL, email TEXT NOT NULL, created TEXT NOT NULL);
-  CREATE TABLE records (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, kind TEXT NOT NULL, id TEXT NOT NULL,
-    data TEXT NOT NULL, updated_at TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL, PRIMARY KEY (user_id, kind, id));`);
-const R = require('../reminders.js')({ db, DATA_DIR: dir, PUBLIC_URL: 'https://bayad.example.com', CONTACT_EMAIL: 'me@example.com' });
+  CREATE TABLE records (scope TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, updated_at TEXT NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL, created_by INTEGER, updated_by INTEGER, PRIMARY KEY (scope, kind, id));`);
+const H = require('../households.js')({ db, PUBLIC_URL: 'https://bayad.example.com' });
+const R = require('../reminders.js')({ db, households: H, DATA_DIR: dir, PUBLIC_URL: 'https://bayad.example.com', CONTACT_EMAIL: 'me@example.com' });
 const hmac = (k, d) => crypto.createHmac('sha256', k).update(d).digest();
 
 test('a push message decrypts on the receiving side (RFC 8291)', () => {
@@ -63,10 +64,18 @@ test('subscriptions are validated', () => {
 const t = S.parseD(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila' }).format(new Date()));
 const day = n => { const d = new Date(t); d.setDate(d.getDate() + n); return d; };
 db.prepare("INSERT INTO users (id, google_sub, email, created) VALUES (1, 'sub1', 'a@b.c', 'x')").run();
-const put = (kind, id, data) => db.prepare('INSERT INTO records (user_id, kind, id, data, updated_at, seq) VALUES (1, ?, ?, ?, ?, 1)').run(kind, id, JSON.stringify(data), 'x');
+const put = (kind, id, data, scope = 'u:1') => db.prepare('INSERT INTO records (scope, kind, id, data, updated_at, seq) VALUES (?, ?, ?, ?, ?, 1)').run(scope, kind, id, JSON.stringify(data), 'x');
 put('item', 'meralco', { name: 'Meralco', dir: 'out', amount: 2800, freq: 'monthly', dueDay: day(1).getDate(), startMonth: S.ym(day(1)), paid: {} });
 put('item', 'rent', { name: 'Rent, unit 4B', dir: 'out', amount: 12000, freq: 'once', dueDate: S.iso(day(-3)) });
-put('item', 'water', { name: 'Water', dir: 'out', amount: 400, freq: 'once', dueDate: S.iso(t), paidOn: S.iso(t) });
+put('item', 'water', { name: 'Water', dir: 'out', amount: 400, freq: 'once', dueDate: S.iso(t) });
+put('pay', 'water|once', { itemId: 'water', period: 'once', on: S.iso(t), amount: 400 }); // paid, as a separate payment record
+put('item', 'legacy', { name: 'Old style', dir: 'out', amount: 100, freq: 'once', dueDate: S.iso(t), paidOn: S.iso(t) }); // paid, the old way
+// A household bill shows up for its members.
+db.prepare("INSERT INTO users (id, google_sub, email, created) VALUES (2, 'sub2', 'ana@b.c', 'x')").run();
+assert.equal(H.create(2, 'Vivas family'), null);
+const inv = H.invite(2, 'member');
+assert.equal(H.join(1, inv.url.split('/join/')[1]), null);
+put('item', 'condo', { name: 'Condo dues', dir: 'out', amount: 3000, freq: 'once', dueDate: S.iso(day(1)) }, 'h:' + H.membership(1).id);
 put('item', 'tip', { name: 'Late income', dir: 'in', amount: 100, freq: 'once', dueDate: S.iso(day(-2)) });
 put('loan', 'ely', { friend: 'Tita Ely', dir: 'out', amount: 5000, promiseDate: S.iso(t), payments: [{ amount: 2000, date: S.iso(t) }] });
 
@@ -75,8 +84,9 @@ test('the daily digest lists what is due, overdue bills and debts, not paid or l
   assert.match(d.body, /Meralco due · ₱2,800 · tomorrow/);
   assert.match(d.body, /Rent, unit 4B due · ₱12,000 · 3 days overdue/);
   assert.match(d.body, /Pay back Tita Ely · ₱3,000 · today/);
-  assert.doesNotMatch(d.body, /Water|Late income/);
-  assert.equal(d.title, 'Bayad: 2 coming up, 1 overdue');
+  assert.match(d.body, /Condo dues due · ₱3,000 · tomorrow/);
+  assert.doesNotMatch(d.body, /Water|Late income|Old style/);
+  assert.equal(d.title, 'Bayad: 3 coming up, 1 overdue');
 });
 
 test('the calendar feed is valid iCalendar and its link can be reset', () => {
@@ -92,6 +102,7 @@ test('the calendar feed is valid iCalendar and its link can be reset', () => {
   const fresh = R.calendarUrl(1, null, true);
   assert.notEqual(fresh, url);
   assert.equal(R.calendar(token(url)), null, 'old link stops working');
+  H.leave(1);
   db.prepare('DELETE FROM users WHERE id = 1').run();
   assert.equal(R.calendar(token(fresh)), null, 'deleted account has no feed');
 });

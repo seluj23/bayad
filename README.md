@@ -44,6 +44,18 @@ The privacy policy describes what this code does. If you change what the app col
 5. **Domains:** add your domain, container port **3000**, with HTTPS on.
 6. Deploy, then open the domain on your phone, install the app, and tap **Sign in with Google** under *Sync, backup & install*.
 
+## Households
+
+Signed-in people can create a household under *Sync & backup → Household* and invite others with a one-time link (valid 7 days), as a **member** or a **viewer**:
+
+- **Owner:** everything below, plus invites, roles and removing people. Can hand ownership to someone else.
+- **Member:** add, edit and record payments on shared bills; delete the shared bills they added.
+- **Viewer:** sees shared bills, can't change them.
+
+Each bill is either just yours or shared, chosen on the bill form. Loans and debts are always personal. Every payment records who made it, and members can get a notification when someone pays a shared bill. The server enforces the roles; the app only hides what someone can't do.
+
+Each person can be in one household. When the owner leaves, the longest-standing member becomes the owner; when the last person leaves, the household and its shared bills are deleted.
+
 ## Reminders
 
 Signed-in people can turn on two kinds of reminders under *Sync & backup → Reminders*:
