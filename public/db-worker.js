@@ -5,36 +5,45 @@
 import sqlite3InitModule from './sqlite/sqlite3.mjs';
 
 const DB_NAME = '/bayad.sqlite3';
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
+const FREQS = ['monthly', 'twice', 'weekly', 'biweekly', 'quarterly', 'yearly', 'once'];
 let sqlite3, db, poolUtil, mode = 'opfs';
 
-const SCHEMA = `
-PRAGMA foreign_keys = ON;
-CREATE TABLE IF NOT EXISTS items (
+// freq: monthly | twice (two days a month) | weekly | biweekly | quarterly | yearly | once
+const ITEMS_TABLE = `CREATE TABLE IF NOT EXISTS items (
   id          TEXT PRIMARY KEY,
   dir         TEXT NOT NULL DEFAULT 'out' CHECK (dir IN ('in','out')),
   name        TEXT NOT NULL,
   amount      REAL,
-  freq        TEXT NOT NULL DEFAULT 'monthly' CHECK (freq IN ('monthly','once')),
+  freq        TEXT NOT NULL DEFAULT 'monthly',
   due_day     INTEGER,
+  due_day2    INTEGER,
   due_date    TEXT,
   start_month TEXT,
   paid_on     TEXT,
+  paid_amount REAL,
+  paid_ref    TEXT NOT NULL DEFAULT '',
   note        TEXT NOT NULL DEFAULT '',
   example     INTEGER NOT NULL DEFAULT 0,
   created     TEXT,
   updated_at  TEXT,
   deleted     INTEGER NOT NULL DEFAULT 0,
   dirty       INTEGER NOT NULL DEFAULT 1
-);
+);`;
+const SCHEMA = `
+PRAGMA foreign_keys = ON;
+${ITEMS_TABLE}
 CREATE TABLE IF NOT EXISTS item_months (
   item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
   month   TEXT NOT NULL,
   paid_on TEXT NOT NULL,
+  amount  REAL,
+  ref     TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (item_id, month)
 );
 CREATE TABLE IF NOT EXISTS loans (
   id           TEXT PRIMARY KEY,
+  dir          TEXT NOT NULL DEFAULT 'in',
   friend       TEXT NOT NULL,
   amount       REAL NOT NULL,
   lent_date    TEXT,
@@ -51,7 +60,8 @@ CREATE TABLE IF NOT EXISTS loan_payments (
   id        INTEGER PRIMARY KEY,
   loan_id   TEXT NOT NULL REFERENCES loans(id) ON DELETE CASCADE,
   amount    REAL NOT NULL,
-  paid_date TEXT NOT NULL
+  paid_date TEXT NOT NULL,
+  ref       TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS loan_payments_loan ON loan_payments(loan_id);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -104,6 +114,24 @@ function ensureSchema(d) {
     if (!cols.includes('dirty')) d.exec(`ALTER TABLE ${t} ADD COLUMN dirty INTEGER NOT NULL DEFAULT 1`);
     d.exec(`UPDATE ${t} SET updated_at = COALESCE(created, strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE updated_at IS NULL`);
   }
+  // v2 -> v3: more repeat options, money you owe, payment amounts and references
+  const itemsSql = d.selectValue("SELECT sql FROM sqlite_master WHERE type='table' AND name='items'") || '';
+  if (itemsSql.includes("CHECK (freq IN")) {
+    // SQLite can't drop a CHECK in place, so rebuild the table. Foreign keys are off so item_months isn't cascaded away.
+    const keep = 'id,dir,name,amount,freq,due_day,due_date,start_month,paid_on,note,example,created,updated_at,deleted,dirty';
+    d.exec('PRAGMA foreign_keys = OFF');
+    d.transaction(() => {
+      d.exec(ITEMS_TABLE.replace('IF NOT EXISTS items (', 'items_v3 ('));
+      d.exec(`INSERT INTO items_v3 (${keep}) SELECT ${keep} FROM items`);
+      d.exec('DROP TABLE items');
+      d.exec('ALTER TABLE items_v3 RENAME TO items');
+    });
+    d.exec('PRAGMA foreign_keys = ON');
+  }
+  const addCols = (t, cols) => { const have = d.selectValues(`SELECT name FROM pragma_table_info('${t}')`); for (const [c, def] of cols) if (!have.includes(c)) d.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`); };
+  addCols('item_months', [['amount', 'REAL'], ['ref', "TEXT NOT NULL DEFAULT ''"]]);
+  addCols('loans', [['dir', "TEXT NOT NULL DEFAULT 'in'"]]);
+  addCols('loan_payments', [['ref', "TEXT NOT NULL DEFAULT ''"]]);
   d.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 }
 const now = () => new Date().toISOString();
@@ -136,19 +164,33 @@ async function afterWrite() {
 /* ---------- rows <-> app objects ---------- */
 function childMaps(d = db) {
   const byItem = {}, byLoan = {};
-  d.selectObjects('SELECT item_id, month, paid_on FROM item_months').forEach(m => { (byItem[m.item_id] ||= {})[m.month] = m.paid_on; });
-  d.selectObjects('SELECT loan_id, amount, paid_date FROM loan_payments ORDER BY id').forEach(p => { (byLoan[p.loan_id] ||= []).push({ amount: p.amount, date: p.paid_date }); });
+  // A paid period is just its date, or { on, amount, ref } when an amount or reference was recorded.
+  d.selectObjects('SELECT item_id, month, paid_on, amount, ref FROM item_months').forEach(m => {
+    (byItem[m.item_id] ||= {})[m.month] = m.amount == null && !m.ref ? m.paid_on : { on: m.paid_on, amount: m.amount, ref: m.ref || '' };
+  });
+  d.selectObjects('SELECT loan_id, amount, paid_date, ref FROM loan_payments ORDER BY id').forEach(p => {
+    const o = { amount: p.amount, date: p.paid_date }; if (p.ref) o.ref = p.ref;
+    (byLoan[p.loan_id] ||= []).push(o);
+  });
   return { byItem, byLoan };
 }
 function itemObj(r, byItem) {
   const o = { id: r.id, dir: r.dir, name: r.name, amount: r.amount, freq: r.freq, note: r.note, created: r.created };
   if (r.example) o.example = true;
-  if (r.freq === 'monthly') { o.dueDay = r.due_day; o.startMonth = r.start_month; o.paid = byItem[r.id] || {}; }
-  else { o.dueDate = r.due_date; if (r.paid_on) o.paidOn = r.paid_on; }
+  if (r.freq === 'once') {
+    o.dueDate = r.due_date;
+    if (r.paid_on) o.paidOn = r.paid_on;
+    if (r.paid_amount != null) o.paidAmount = r.paid_amount;
+    if (r.paid_ref) o.paidRef = r.paid_ref;
+  } else {
+    o.paid = byItem[r.id] || {};
+    if (r.freq === 'weekly' || r.freq === 'biweekly') o.dueDate = r.due_date;
+    else { o.dueDay = r.due_day; o.startMonth = r.start_month; if (r.freq === 'twice') o.dueDay2 = r.due_day2; }
+  }
   return o;
 }
 function loanObj(r, byLoan) {
-  const o = { id: r.id, friend: r.friend, amount: r.amount, lentDate: r.lent_date, promiseDate: r.promise_date,
+  const o = { id: r.id, dir: r.dir === 'out' ? 'out' : 'in', friend: r.friend, amount: r.amount, lentDate: r.lent_date, promiseDate: r.promise_date,
     note: r.note, created: r.created, payments: byLoan[r.id] || [] };
   if (r.settled_on) o.settledOn = r.settled_on;
   if (r.example) o.example = true;
@@ -164,32 +206,36 @@ function readAll(d = db) {
 const n = v => (v === undefined || v === '' ? null : v);
 function writeItem(b, stamp = now(), dirty = 1) {
   db.exec({
-    sql: `INSERT INTO items (id,dir,name,amount,freq,due_day,due_date,start_month,paid_on,note,example,created,updated_at,deleted,dirty)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)
+    sql: `INSERT INTO items (id,dir,name,amount,freq,due_day,due_day2,due_date,start_month,paid_on,paid_amount,paid_ref,note,example,created,updated_at,deleted,dirty)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)
           ON CONFLICT(id) DO UPDATE SET dir=excluded.dir,name=excluded.name,amount=excluded.amount,freq=excluded.freq,
-          due_day=excluded.due_day,due_date=excluded.due_date,start_month=excluded.start_month,paid_on=excluded.paid_on,
+          due_day=excluded.due_day,due_day2=excluded.due_day2,due_date=excluded.due_date,start_month=excluded.start_month,
+          paid_on=excluded.paid_on,paid_amount=excluded.paid_amount,paid_ref=excluded.paid_ref,
           note=excluded.note,example=excluded.example,updated_at=excluded.updated_at,deleted=0,dirty=excluded.dirty`,
-    bind: [b.id, b.dir === 'in' ? 'in' : 'out', b.name || '', n(b.amount), b.freq === 'once' ? 'once' : 'monthly',
-      n(b.dueDay), n(b.dueDate), n(b.startMonth), n(b.paidOn), b.note || '', b.example ? 1 : 0, b.created || now(), stamp, dirty]
+    bind: [b.id, b.dir === 'in' ? 'in' : 'out', b.name || '', n(b.amount), FREQS.includes(b.freq) ? b.freq : 'monthly',
+      n(b.dueDay), n(b.dueDay2), n(b.dueDate), n(b.startMonth), n(b.paidOn), n(b.paidAmount), b.paidRef || '',
+      b.note || '', b.example ? 1 : 0, b.created || now(), stamp, dirty]
   });
   db.exec({ sql: 'DELETE FROM item_months WHERE item_id = ?', bind: [b.id] });
-  for (const [month, paidOn] of Object.entries(b.paid || {})) {
-    db.exec({ sql: 'INSERT INTO item_months (item_id, month, paid_on) VALUES (?,?,?)', bind: [b.id, month, paidOn] });
+  for (const [month, v] of Object.entries(b.paid || {})) {
+    const p = typeof v === 'string' ? { on: v } : (v || {});
+    if (!p.on) continue;
+    db.exec({ sql: 'INSERT INTO item_months (item_id, month, paid_on, amount, ref) VALUES (?,?,?,?,?)', bind: [b.id, month, String(p.on), n(p.amount), p.ref || ''] });
   }
 }
 function writeLoan(l, stamp = now(), dirty = 1) {
   db.exec({
-    sql: `INSERT INTO loans (id,friend,amount,lent_date,promise_date,settled_on,note,example,created,updated_at,deleted,dirty)
-          VALUES (?,?,?,?,?,?,?,?,?,?,0,?)
-          ON CONFLICT(id) DO UPDATE SET friend=excluded.friend,amount=excluded.amount,lent_date=excluded.lent_date,
+    sql: `INSERT INTO loans (id,dir,friend,amount,lent_date,promise_date,settled_on,note,example,created,updated_at,deleted,dirty)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,0,?)
+          ON CONFLICT(id) DO UPDATE SET dir=excluded.dir,friend=excluded.friend,amount=excluded.amount,lent_date=excluded.lent_date,
           promise_date=excluded.promise_date,settled_on=excluded.settled_on,note=excluded.note,example=excluded.example,
           updated_at=excluded.updated_at,deleted=0,dirty=excluded.dirty`,
-    bind: [l.id, l.friend || '', Number(l.amount) || 0, n(l.lentDate), n(l.promiseDate), n(l.settledOn), l.note || '',
+    bind: [l.id, l.dir === 'out' ? 'out' : 'in', l.friend || '', Number(l.amount) || 0, n(l.lentDate), n(l.promiseDate), n(l.settledOn), l.note || '',
       l.example ? 1 : 0, l.created || now(), stamp, dirty]
   });
   db.exec({ sql: 'DELETE FROM loan_payments WHERE loan_id = ?', bind: [l.id] });
   for (const p of l.payments || []) {
-    db.exec({ sql: 'INSERT INTO loan_payments (loan_id, amount, paid_date) VALUES (?,?,?)', bind: [l.id, Number(p.amount) || 0, p.date || ''] });
+    db.exec({ sql: 'INSERT INTO loan_payments (loan_id, amount, paid_date, ref) VALUES (?,?,?,?)', bind: [l.id, Number(p.amount) || 0, p.date || '', p.ref || ''] });
   }
 }
 const TABLE = { item: 'items', loan: 'loans' };

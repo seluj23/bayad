@@ -19,6 +19,10 @@ const DEV_LOGIN = process.env.DEV_FAKE_LOGIN === '1'; // local testing only — 
 const SECURE = PUBLIC_URL.startsWith('https://');
 const STATIC_DIR = path.join(__dirname, 'public');
 const SESSION_DAYS = 180;
+const MAX_RECORDS = Number(process.env.MAX_RECORDS_PER_USER || 5000); // bills, income and loans per account, including deleted ones
+const BACKUP_DIR = process.env.BACKUP_DIR || path.join(DATA_DIR, 'backups');
+const TRUST_PROXY = process.env.TRUST_PROXY !== '0'; // read the client address from X-Forwarded-For (set by Dokploy's Traefik)
+const BACKUP_KEEP = Number(process.env.BACKUP_KEEP ?? 7); // daily snapshots to keep; 0 turns them off
 const REDIRECT_URI = PUBLIC_URL + '/auth/google/callback';
 
 if (!CLIENT_ID || !CLIENT_SECRET) console.warn('[bayad] GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not set: sign-in is disabled, the app still works offline.');
@@ -66,6 +70,7 @@ const q = {
   dropSession: db.prepare('DELETE FROM sessions WHERE token_hash = ?'),
   pruneSessions: db.prepare('DELETE FROM sessions WHERE expires <= ?'),
   maxSeq: db.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM records WHERE user_id = ?'),
+  recordCount: db.prepare('SELECT COUNT(*) AS n FROM records WHERE user_id = ?'),
   record: db.prepare('SELECT updated_at FROM records WHERE user_id = ? AND kind = ? AND id = ?'),
   upsert: db.prepare(`INSERT INTO records (user_id, kind, id, data, updated_at, deleted, seq) VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, kind, id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at,
@@ -73,6 +78,41 @@ const q = {
   since: db.prepare('SELECT kind, id, data, updated_at, deleted, seq FROM records WHERE user_id = ? AND seq > ? ORDER BY seq LIMIT 2000'),
 };
 q.pruneSessions.run(new Date().toISOString());
+
+/* ---------- daily backups ---------- */
+// A consistent copy of the database per day in BACKUP_DIR, keeping the newest BACKUP_KEEP.
+// They live on the same volume, so they cover bad deletes and corruption, not a lost volume.
+function backup() {
+  if (BACKUP_KEEP <= 0) return;
+  try {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const file = path.join(BACKUP_DIR, `bayad-${new Date().toISOString().slice(0, 10)}.sqlite3`);
+    if (fs.existsSync(file)) return;
+    db.prepare('VACUUM INTO ?').run(file);
+    const old = fs.readdirSync(BACKUP_DIR).filter(f => /^bayad-\d{4}-\d\d-\d\d\.sqlite3$/.test(f)).sort().slice(0, -BACKUP_KEEP);
+    old.forEach(f => fs.unlinkSync(path.join(BACKUP_DIR, f)));
+    console.log('[bayad] backup written:', path.basename(file));
+  } catch (e) { console.error('[bayad] backup failed:', e.message); }
+}
+backup();
+setInterval(backup, 3600 * 1000).unref();
+
+/* ---------- rate limits ---------- */
+// Fixed one-minute windows, kept in memory. Fine for a single server process.
+const hits = new Map();
+function limited(key, max) {
+  const t = Date.now();
+  let h = hits.get(key);
+  if (!h || h.reset <= t) { h = { n: 0, reset: t + 60000 }; hits.set(key, h); }
+  return ++h.n > max;
+}
+setInterval(() => { const t = Date.now(); for (const [k, h] of hits) if (h.reset <= t) hits.delete(k); }, 60000).unref();
+// Behind a reverse proxy (Dokploy's Traefik), the proxy appends the real client address last.
+// Without one, clients could fake the header, so set TRUST_PROXY=0 when the app is reached directly.
+function clientIp(req) {
+  const xff = TRUST_PROXY ? String(req.headers['x-forwarded-for'] || '').split(',').map(s => s.trim()).filter(Boolean) : [];
+  return xff.length ? xff[xff.length - 1] : req.socket.remoteAddress || '';
+}
 
 /* ---------- helpers ---------- */
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
@@ -163,10 +203,12 @@ const ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/;
 function sync(user, body) {
   const since = Number.isInteger(body.since) && body.since >= 0 ? body.since : 0;
   const changes = Array.isArray(body.changes) ? body.changes.slice(0, 5000) : [];
-  let accepted = 0;
+  let accepted = 0, full = false;
+  const rejected = [];
   db.exec('BEGIN IMMEDIATE');
   try {
     let seq = q.maxSeq.get(user.id).m;
+    let count = q.recordCount.get(user.id).n;
     for (const c of changes) {
       if (!c || (c.kind !== 'item' && c.kind !== 'loan')) continue;
       if (typeof c.id !== 'string' || !c.id || c.id.length > 100) continue;
@@ -175,6 +217,7 @@ function sync(user, body) {
       if (data.length > 65536) continue;
       const cur = q.record.get(user.id, c.kind, c.id);
       if (cur && cur.updated_at >= c.updated_at) continue; // newer (or same) version already stored
+      if (!cur) { if (count >= MAX_RECORDS) { full = true; rejected.push({ kind: c.kind, id: c.id }); continue; } count++; }
       q.upsert.run(user.id, c.kind, c.id, data, c.updated_at, c.deleted ? 1 : 0, ++seq);
       accepted++;
     }
@@ -183,6 +226,8 @@ function sync(user, body) {
   const rows = q.since.all(user.id, since);
   return {
     accepted,
+    full,
+    rejected,
     cursor: rows.length ? rows[rows.length - 1].seq : Math.max(since, 0),
     more: rows.length === 2000,
     changes: rows.map(r => ({ kind: r.kind, id: r.id, data: r.deleted ? null : JSON.parse(r.data), updated_at: r.updated_at, deleted: !!r.deleted }))
@@ -226,6 +271,9 @@ const server = http.createServer(async (req, res) => {
   const p = url.pathname;
   try {
     if (p === '/healthz') return send(res, 200, { ok: true });
+    const ip = clientIp(req);
+    if (p.startsWith('/auth/') && limited('auth:' + ip, 30)) return send(res, 429, 'Too many sign-in attempts. Wait a minute and try again.', { 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '60' });
+    if (p.startsWith('/api/') && limited('api:' + ip, 300)) return send(res, 429, { error: 'rate_limited' }, { 'Retry-After': '60' });
     if (p === '/auth/google' && req.method === 'GET') return authStart(req, res);
     if (p === '/auth/google/callback' && req.method === 'GET') return await authCallback(req, res, url);
     if (p === '/auth/dev' && DEV_LOGIN) {
@@ -252,6 +300,7 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/sync' && req.method === 'POST') {
         const u = currentUser(req);
         if (!u) return send(res, 401, { error: 'signed_out' });
+        if (limited('sync:' + u.id, 120)) return send(res, 429, { error: 'rate_limited' }, { 'Retry-After': '60' });
         let body; try { body = JSON.parse(await readBody(req) || '{}'); } catch (e) { return send(res, e.status || 400, { error: 'bad_request' }); }
         return send(res, 200, sync(u, body));
       }

@@ -81,12 +81,28 @@ header p{margin:1px 0 0;color:var(--muted);font-size:13px}
 .go{width:16px;height:16px;color:var(--muted);flex:none}
 .alertbar .go{color:inherit}
 
-.tabs{display:grid;grid-template-columns:1fr 1fr;background:var(--track);border-radius:13px;padding:3px;gap:3px}
+.tabs{display:grid;grid-template-columns:1fr 1fr auto;background:var(--track);border-radius:13px;padding:3px;gap:3px}
 .tabs button{border:0;background:transparent;padding:9px;border-radius:10px;font-weight:600;color:var(--muted);display:flex;justify-content:center;gap:8px;align-items:center;transition:background .15s,color .15s}
 .tabs button[aria-selected="true"]{background:var(--surface);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.1)}
 .tabs .count{font-family:var(--f-mono);font-size:11px;line-height:18px;min-width:20px;padding:0 6px;border-radius:999px;background:var(--line);color:var(--ink)}
 .tabs [aria-selected="true"] .count{background:var(--accent);color:var(--accent-ink)}
 .tabs .count:empty{display:none}
+#tab-history{padding:9px 14px}
+.owed .v.out{color:var(--ink)}
+.sub{margin:4px 0 0}
+.facts.pays{color:var(--ink)}
+.monthnav{display:flex;align-items:center;justify-content:space-between;padding:8px 8px 0}
+.monthnav b{font-family:var(--f-display);font-size:16px}
+.monthnav .btn{font-size:22px;line-height:1;min-width:44px}
+.cols.totals{padding:6px 16px 16px;margin-top:0;border-bottom:1px solid var(--line)}
+.ledger .lrow{display:grid;grid-template-columns:50px 1fr auto;gap:10px;align-items:baseline;padding:11px 16px;border-top:1px solid var(--line)}
+.ledger .lrow:first-child{border-top:0}
+.lrow .d{font-size:13px;color:var(--muted)}
+.lrow .w{display:flex;flex-direction:column;min-width:0}
+.lrow .w b{font-weight:600;overflow-wrap:anywhere}
+.lrow .w span{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+.lrow .a{font-family:var(--f-mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.lrow .a.in{color:var(--accent)}
 
 #main{display:flex;flex-direction:column;gap:10px}
 .bar{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:0 2px;scroll-margin-top:16px}
@@ -237,6 +253,7 @@ details.backup > div{display:flex;flex-direction:column;gap:10px;padding-bottom:
   <div class="tabs" role="tablist">
     <button role="tab" id="tab-out" aria-selected="true" data-action="tab" data-tab="out">Money out <span class="count" id="c-out"></span></button>
     <button role="tab" id="tab-in" aria-selected="false" data-action="tab" data-tab="in">Money in <span class="count" id="c-in"></span></button>
+    <button role="tab" id="tab-history" aria-selected="false" data-action="tab" data-tab="history">History</button>
   </div>
 
   <main id="main"></main>
@@ -251,6 +268,7 @@ details.backup > div{display:flex;flex-direction:column;gap:10px;padding-bottom:
         <div class="inline">
           <button class="btn" data-action="export">Download database (.sqlite)</button>
           <button class="btn" data-action="export-json">Download as JSON</button>
+          <button class="btn" data-action="export-csv">Download payments (.csv)</button>
           <label class="btn filebtn">Restore from backup<input type="file" id="importfile" accept=".sqlite,.sqlite3,.db,.json,application/json,application/vnd.sqlite3,application/octet-stream"></label>
         </div>
         <p id="dbinfo" class="hint"></p>
@@ -286,8 +304,8 @@ const esc = s => String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>
 const uid = () => Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 function dueIn(y,m,day){ const last=new Date(y,m+1,0).getDate(); return new Date(y,m,Math.min(day,last)); }
 
-const S = { bills:[], loans:[], tab:'out', form:null, payFor:null, confirmDel:null, open:null, db:null, loaded:{bills:false,loans:false}, live:false, readOnly:false };
-try{ const t=localStorage.getItem('bayad-tab'); if(t==='in'||t==='out') S.tab=t; }catch(e){}
+const S = { bills:[], loans:[], tab:'out', form:null, confirmDel:null, open:null, histMonth:null, db:null, loaded:{bills:false,loans:false}, live:false, readOnly:false };
+try{ const t=localStorage.getItem('bayad-tab'); if(t==='in'||t==='out'||t==='history') S.tab=t; }catch(e){}
 const dirOf = b => b.dir==='in'?'in':'out';
 const plural = (n,one,many) => n+' '+(n===1?one:many);
 const CHECK='<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -297,12 +315,30 @@ const GO='<svg class="go" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4
 document.getElementById('today').textContent = today().toLocaleDateString('en-PH',{weekday:'long',month:'long',day:'numeric'});
 
 /* ---------- status ---------- */
+const MONTH_STEP={monthly:1,twice:1,quarterly:3,yearly:12};
+const FREQ_SHORT={monthly:'monthly',twice:'twice a month',weekly:'weekly',biweekly:'every 2 weeks',quarterly:'every 3 months',yearly:'yearly'};
+const FREQ_OPTS=[['monthly','Every month'],['twice','Twice a month'],['weekly','Every week'],['biweekly','Every 2 weeks'],['quarterly','Every 3 months'],['yearly','Every year'],['once','One time only']];
+const byWeek = b => b.freq==='weekly'||b.freq==='biweekly';
+const byDate = f => f==='weekly'||f==='biweekly'||f==='quarterly'||f==='yearly'||f==='once'; // set with a date picker
+const payOf = v => typeof v==='string'?{on:v}:(v||{}); // a paid period is a date, or {on, amount, ref}
+const owes = l => l.dir==='out';
 function kindFor(diff){ return diff<0?'overdue':diff<=3?'soon':'later'; }
 function dueLabel(diff){
   if(diff<0) return (-diff)+(diff===-1?' day':' days')+' overdue';
   if(diff===0) return 'Due today';
   if(diff===1) return 'Due tomorrow';
   return 'Due in '+diff+' days';
+}
+// The i-th due date of a repeating entry, and the key its payment is stored under.
+function occ(b,i){
+  if(byWeek(b)){ const d=parseD(b.dueDate)||today(); d.setDate(d.getDate()+i*(b.freq==='weekly'?7:14)); return {key:iso(d),date:d}; }
+  const [sy,sm]=(b.startMonth||ym(today())).split('-').map(Number), start=sy*12+(sm-1);
+  if(b.freq==='twice'){
+    const idx=start+Math.floor(i/2), yy=Math.floor(idx/12), mm=idx%12, second=i%2===1;
+    return {key:yy+'-'+pad(mm+1)+'-'+(second?'b':'a'),date:dueIn(yy,mm,Number(second?b.dueDay2:b.dueDay)||1)};
+  }
+  const idx=start+i*(MONTH_STEP[b.freq]||1), yy=Math.floor(idx/12), mm=idx%12;
+  return {key:yy+'-'+pad(mm+1),date:dueIn(yy,mm,Number(b.dueDay)||1)};
 }
 function billStatus(b){
   const t=today();
@@ -312,15 +348,28 @@ function billStatus(b){
     const diff=diffDays(t,d); return {kind:kindFor(diff),date:d,diff};
   }
   const paid=b.paid||{};
-  const [sy,sm]=(b.startMonth||ym(t)).split('-').map(Number);
-  const start=sy*12+(sm-1);
-  for(let i=0;i<60;i++){
-    const idx=start+i, yy=Math.floor(idx/12), mm=idx%12, key=yy+'-'+pad(mm+1);
-    if(paid[key]) continue;
-    const d=dueIn(yy,mm,Number(b.dueDay)||1), diff=diffDays(t,d);
-    return {kind:kindFor(diff),date:d,diff,key};
+  for(let i=0;i<600;i++){
+    const o=occ(b,i); if(paid[o.key]) continue;
+    const diff=diffDays(t,o.date); return {kind:kindFor(diff),date:o.date,diff,key:o.key};
   }
   return {kind:'later',date:t,diff:0};
+}
+// What a payment period is called: "November", "Nov 15", "March 2027".
+function periodLabel(b,key){
+  if(!key) return '';
+  if(byWeek(b)) return fmtShort(parseD(key));
+  if(b.freq==='twice'){ const [y,m]=key.split('-').map(Number); return fmtShort(dueIn(y,m-1,Number(key.endsWith('b')?b.dueDay2:b.dueDay)||1)); }
+  if(b.freq==='quarterly'||b.freq==='yearly') return monthName(key)+' '+key.slice(0,4);
+  return monthName(key);
+}
+function freqText(b){
+  if(b.freq==='monthly') return 'Every month on day '+esc(b.dueDay);
+  if(b.freq==='twice') return 'Twice a month, on days '+esc(b.dueDay)+' and '+esc(b.dueDay2);
+  if(b.freq==='weekly') return 'Every week';
+  if(b.freq==='biweekly') return 'Every 2 weeks';
+  if(b.freq==='quarterly') return 'Every 3 months';
+  if(b.freq==='yearly') return 'Every year';
+  return 'One time';
 }
 function lastPaidKey(b){ const ks=Object.keys(b.paid||{}).sort(); return ks[ks.length-1]||null; }
 function loanInfo(l){
@@ -331,26 +380,40 @@ function loanInfo(l){
   if(remaining>0 && pd){ const diff=diffDays(t,pd); promise={date:pd,diff,kind:diff<0?'overdue':diff<=3?'soon':'later'}; }
   return {paid,remaining,settled:remaining<=0,promise};
 }
+// Every recorded money movement, newest first. Feeds the History tab and the CSV export.
+function ledger(){
+  const out=[];
+  S.bills.forEach(b=>{
+    const dir=dirOf(b), type=dir==='in'?'Income':'Bill';
+    if(b.freq==='once'){ if(b.paidOn) out.push({date:b.paidOn,dir,amount:b.paidAmount??b.amount,name:b.name,what:type,ref:b.paidRef||''}); return; }
+    Object.entries(b.paid||{}).forEach(([k,v])=>{ const p=payOf(v); if(p.on) out.push({date:p.on,dir,amount:p.amount??b.amount,name:b.name,what:type+' · '+periodLabel(b,k),ref:p.ref||''}); });
+  });
+  S.loans.forEach(l=>{
+    const o=owes(l);
+    if(l.lentDate) out.push({date:l.lentDate,dir:o?'in':'out',amount:l.amount,name:l.friend,what:o?'Borrowed':'Lent',ref:''});
+    (l.payments||[]).forEach(p=>out.push({date:p.date,dir:o?'out':'in',amount:p.amount,name:l.friend,what:o?'You paid back':'Paid you back',ref:p.ref||''}));
+  });
+  return out.filter(x=>x.date).sort((a,b)=>b.date.localeCompare(a.date));
+}
 
 /* ---------- render ---------- */
 function render(){
   S.needsRender=false;
   renderSummary();
-  document.getElementById('tab-out').setAttribute('aria-selected',S.tab==='out');
-  document.getElementById('tab-in').setAttribute('aria-selected',S.tab==='in');
-  const openOut=S.bills.filter(b=>dirOf(b)==='out'&&billStatus(b).kind!=='done').length;
-  const openIn=S.bills.filter(b=>dirOf(b)==='in'&&billStatus(b).kind!=='done').length+S.loans.filter(l=>!loanInfo(l).settled).length;
-  document.getElementById('c-out').textContent=openOut||'';
-  document.getElementById('c-in').textContent=openIn||'';
+  ['out','in','history'].forEach(t=>document.getElementById('tab-'+t).setAttribute('aria-selected',S.tab===t));
+  const openBills=d=>S.bills.filter(b=>dirOf(b)===d&&billStatus(b).kind!=='done').length;
+  const openLoans=d=>S.loans.filter(l=>(owes(l)?'out':'in')===d&&!loanInfo(l).settled).length;
+  document.getElementById('c-out').textContent=(openBills('out')+openLoans('out'))||'';
+  document.getElementById('c-in').textContent=(openBills('in')+openLoans('in'))||'';
   const main=document.getElementById('main');
-  main.innerHTML = S.tab==='out'?billsView('out'):(billsView('in')+loansView());
+  main.innerHTML = S.tab==='history'?historyView():billsView(S.tab)+loansView(S.tab);
   renderSheet();
   renderNotice();
 }
 function renderSheet(){
   const wrap=document.getElementById('sheet'), body=document.getElementById('sheet-body');
   if(S.form){
-    body.innerHTML=S.form.type==='bill'?billForm():loanForm();
+    body.innerHTML=({bill:billForm,loan:loanForm,pay:payForm})[S.form.type]();
     if(wrap.hidden){ wrap.hidden=false; document.body.classList.add('locked'); }
     const f=body.querySelector('input'); if(f && !S.form._focused){ f.focus(); S.form._focused=true; }
   } else if(!wrap.hidden){ wrap.hidden=true; body.innerHTML=''; document.body.classList.remove('locked'); }
@@ -360,8 +423,9 @@ function renderSummary(){
   S.bills.forEach(b=>{ const s=billStatus(b); if(s.kind==='done') return; const a=Number(b.amount)||0;
     if(dirOf(b)==='in'){ if(s.diff<=7){inc+=a;incN++;} return; }
     if(s.diff<0){od+=a;odN++;} else if(s.diff<=7){wk+=a;wkN++;} });
-  let owed=0,ppl=new Set();
-  S.loans.forEach(l=>{ const i=loanInfo(l); if(!i.settled){ owed+=i.remaining; ppl.add((l.friend||'').trim().toLowerCase()); } });
+  let owed=0,ppl=new Set(),owe=0,lenders=new Set();
+  S.loans.forEach(l=>{ const i=loanInfo(l); if(i.settled) return; const who=(l.friend||'').trim().toLowerCase();
+    if(owes(l)){ owe+=i.remaining; lenders.add(who); } else { owed+=i.remaining; ppl.add(who); } });
   let h='';
   if(odN) h+='<button class="alertbar" data-action="tab" data-tab="out"><span>'+(od?money(od)+' overdue · '+plural(odN,'bill','bills'):plural(odN,'bill','bills')+' overdue')+'</span>'+GO+'</button>';
   h+='<div class="week"><span class="lbl">Next 7 days</span><div class="cols">'+
@@ -369,6 +433,8 @@ function renderSummary(){
     '<button class="fig in" data-action="tab" data-tab="in"><span class="k">Coming in</span><span class="v">'+money(inc)+'</span><span class="s">'+(incN?plural(incN,'payment','payments'):'Nothing expected')+'</span></button></div></div>';
   h+='<button class="owed" data-action="tab" data-tab="in" data-scroll="loans-h"><span class="k">Friends owe you</span><span class="r">'+
     (ppl.size?'<span class="s">'+plural(ppl.size,'person','people')+'</span><span class="v">'+money(owed)+'</span>':'<span class="s">No open loans</span>')+GO+'</span></button>';
+  if(lenders.size) h+='<button class="owed" data-action="tab" data-tab="out" data-scroll="owe-h"><span class="k">You owe</span><span class="r">'+
+    '<span class="s">'+plural(lenders.size,'person','people')+'</span><span class="v out">'+money(owe)+'</span>'+GO+'</span></button>';
   document.getElementById('summary').innerHTML=h;
 }
 function renderNotice(){
@@ -376,13 +442,13 @@ function renderNotice(){
   const ex=S.bills.some(b=>b.example)||S.loans.some(l=>l.example);
   if(S.storageError==='in_use') h+='<div class="banner err">Bayad is already open in another tab or window. Close the other one, then reload this page.</div>';
   else if(S.storageError) h+='<div class="banner err">The database couldn’t be opened, so changes won’t be kept. Turn off private browsing or update your browser, then reopen the app.</div>';
-  if(ex) h+='<div class="banner"><span>Entries marked <b>Example</b> show how it works. Tap the circle to mark one paid, or tap a row for more.</span><button class="btn small" data-action="clear-examples">Remove</button></div>';
+  if(ex) h+='<div class="banner"><span>Entries marked <b>Example</b> show how it works. Tap the circle to record a payment, or tap a row for more.</span><button class="btn small" data-action="clear-examples">Remove</button></div>';
   n.innerHTML=h;
 }
 
 const TXT={
   out:{h:'Bills to pay',add:'+ Add bill',item:'bill',paid:'paid',Paid:'Paid',loading:'Loading your bills…',
-    empty:'<strong>No bills yet</strong>Add each bill once with its due day. Monthly bills roll over automatically after you mark them paid.',
+    empty:'<strong>No bills yet</strong>Add each bill once with when it’s due. Repeating bills roll over automatically after you mark them paid.',
     allDone:'<strong>All bills paid</strong>Nothing left to pay right now.',doneH:'Paid one-time bills'},
   in:{h:'Expected income',add:'+ Add income',item:'income',paid:'received',Paid:'Received',loading:'Loading…',
     empty:'<strong>No income added</strong>Add your salary, allowance, or other regular money coming in so you can see it next to your bills.',
@@ -418,53 +484,83 @@ function rowHtml(o){
   return '<li class="row'+(open?' open':'')+'"><div class="line">'+o.tick+
     '<button class="main" data-action="toggle" data-id="'+id+'" aria-expanded="'+open+'"><span class="top"><span class="name">'+esc(o.name)+(o.example?'<span class="tag">Example</span>':'')+'</span>'+
     '<span class="amt'+(o.inflow?' in':'')+'">'+o.amt+CHEV+'</span></span><span class="meta">'+o.meta+'</span>'+(o.extra||'')+'</button></div>'+
-    (open?'<div class="more">'+(o.facts.length?'<ul class="facts">'+o.facts.map(f=>'<li>'+f+'</li>').join('')+'</ul>':'')+(o.note?'<p class="note">'+esc(o.note)+'</p>':'')+(o.acts?'<div class="actions">'+o.acts+'</div>':'')+'</div>':'')+'</li>';
+    (open?'<div class="more">'+(o.facts.length?'<ul class="facts">'+o.facts.map(f=>'<li>'+f+'</li>').join('')+'</ul>':'')+
+      (o.paid&&o.paid.length?'<ul class="facts pays">'+o.paid.map(f=>'<li>'+f+'</li>').join('')+'</ul>':'')+
+      (o.note?'<p class="note">'+esc(o.note)+'</p>':'')+(o.acts?'<div class="actions">'+o.acts+'</div>':'')+'</div>':'')+'</li>';
 }
 function confirmActs(id,what,action){ return '<span class="hint">Delete this '+what+'?</span><span class="spacer"></span><button class="btn small danger" data-action="'+action+'" data-id="'+id+'">Delete</button><button class="btn small" data-action="cancel-del">Keep</button>'; }
+const payLine = (date,amount,ref,label) => fmtShort(parseD(date))+(label?' · '+esc(label):'')+(amount!=null&&amount!==''?' · '+money(amount):'')+(ref?' · '+esc(ref):'');
 function billRow(b,s){
   const id=esc(b.id), dir=dirOf(b), T=TXT[dir], done=s.kind==='done';
   let pill;
   if(done) pill='<span class="pill done">'+T.Paid+' '+fmtShort(parseD(s.paidOn))+'</span>';
   else if(dir==='in') pill='<span class="pill '+(s.kind==='overdue'?'soon':s.kind==='soon'?'done':'later')+'">'+inLabel(s.diff)+'</span>';
   else pill='<span class="pill '+s.kind+'">'+dueLabel(s.diff)+'</span>';
-  const when = done?'' : '<span>'+fmtShort(s.date)+(b.freq==='once'?'':' · monthly')+'</span>';
+  const when = done?'' : '<span>'+fmtShort(s.date)+(b.freq==='once'?'':' · '+FREQ_SHORT[b.freq])+'</span>';
   const lp=b.freq!=='once'?lastPaidKey(b):null;
-  const doLabel='Mark '+(b.freq==='once'?T.paid:monthName(s.key)+' '+T.paid);
+  const doLabel='Mark '+(b.freq==='once'?'':periodLabel(b,s.key)+' ')+T.paid;
   let tick;
   if(S.readOnly) tick='<span class="tick'+(done?' on':'')+'">'+CHECK+'</span>';
   else if(done) tick='<button class="tick on" data-action="unpay-once" data-id="'+id+'" aria-label="Undo: '+esc(b.name)+' '+T.paid+'">'+CHECK+'</button>';
   else tick='<button class="tick'+(dir==='out'&&s.kind==='overdue'?' due':'')+'" data-action="pay-bill" data-id="'+id+'" aria-label="'+doLabel+': '+esc(b.name)+'" title="'+doLabel+'">'+CHECK+'</button>';
-  const facts=[];
-  if(b.freq==='once') facts.push(done?T.Paid+' on '+fmt(parseD(b.paidOn)):'One time · '+fmt(s.date));
-  else { facts.push('Every month on day '+esc(b.dueDay)); if(!done) facts.push('Next due '+fmt(s.date)); }
-  if(lp) facts.push('Last '+T.paid+': '+monthName(lp));
+  const facts=[], paid=[];
+  if(b.freq==='once'){
+    if(done) paid.push(T.Paid+' '+payLine(b.paidOn,b.paidAmount??b.amount,b.paidRef));
+    else facts.push('One time · '+fmt(s.date));
+  } else {
+    facts.push(freqText(b)); if(!done) facts.push('Next due '+fmt(s.date));
+    Object.keys(b.paid||{}).sort().reverse().slice(0,4).forEach(k=>{ const p=payOf(b.paid[k]); if(p.on) paid.push(T.Paid+' '+payLine(p.on,p.amount??b.amount,p.ref,periodLabel(b,k))); });
+  }
   let acts='';
   if(!S.readOnly){
     if(S.confirmDel===b.id) acts=confirmActs(id,T.item,'del-bill');
-    else acts=(lp?'<button class="btn small" data-action="unpay-month" data-id="'+id+'">Undo '+monthName(lp)+'</button>':'')+
+    else acts=(lp?'<button class="btn small" data-action="unpay-month" data-id="'+id+'">Undo '+periodLabel(b,lp)+'</button>':'')+
       '<span class="spacer"></span><button class="btn small ghost" data-action="edit-bill" data-id="'+id+'">Edit</button><button class="btn small ghost" data-action="ask-del" data-id="'+id+'">Delete</button>';
   }
-  return rowHtml({id:b.id,name:b.name,example:b.example,inflow:dir==='in',amt:b.amount?money(b.amount):'—',meta:pill+when,tick,facts,note:b.note,acts});
+  return rowHtml({id:b.id,name:b.name,example:b.example,inflow:dir==='in',amt:b.amount?money(b.amount):'—',meta:pill+when,tick,facts,paid,note:b.note,acts});
 }
 function billForm(){
   const f=S.form, v=f.values||{}, isIn=f.dir==='in', item=isIn?'income':'bill';
   const freq=v.freq||'monthly';
+  const dayField=(id,name,label,val)=>'<div class="field"><label for="'+id+'">'+label+'</label><input id="'+id+'" name="'+name+'" type="number" inputmode="numeric" min="1" max="31" required placeholder="1–31" value="'+esc(val)+'"></div>';
+  let when;
+  if(freq==='monthly') when=dayField('b-day','dueDay',isIn?'Arrives on day':'Due day of the month',v.dueDay)+'<span class="hint">Day 31 falls on the last day in shorter months.</span>'+
+    (f.id?'':'<label class="check"><input type="checkbox" id="b-paidnow" name="paidNow"'+(v.paidNow?' checked':'')+'> '+(isIn?'I already received this month’s':'I already paid this month’s bill')+'</label>');
+  else if(freq==='twice') when='<div class="grid2">'+dayField('b-day','dueDay','First day',v.dueDay)+dayField('b-day2','dueDay2','Second day',v.dueDay2)+'</div><span class="hint">For example 15 and 30. Day 31 falls on the last day in shorter months.</span>';
+  else when='<div class="field"><label for="b-date">'+(freq==='once'?(isIn?'Expected date':'Due date'):(isIn?'Next expected date':'Next due date'))+'</label><input id="b-date" name="dueDate" type="date" required value="'+esc(v.dueDate||iso(today()))+'">'+
+    (freq==='once'?'':'<span class="hint">It repeats '+FREQ_SHORT[freq]+' from this date.</span>')+'</div>';
   return '<form class="editor" data-form="bill"><h3 id="sheet-h">'+(f.id?'Edit '+item:'New '+item)+'</h3>'+
   '<div class="field"><label for="b-name">'+(isIn?'Source':'Bill')+'</label><input id="b-name" name="name" required maxlength="80" placeholder="'+(isIn?'e.g. Salary, freelance, allowance':'e.g. Meralco, PLDT, rent')+'" value="'+esc(v.name)+'"></div>'+
-  '<div class="grid2"><div class="field"><label for="b-amount">Amount (₱)</label><input id="b-amount" name="amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="Optional" value="'+esc(v.amount)+'"></div>'+
-  '<div class="field"><label for="b-freq">Repeats</label><select id="b-freq" name="freq" data-action="freq"><option value="monthly"'+(freq==='monthly'?' selected':'')+'>Every month</option><option value="once"'+(freq==='once'?' selected':'')+'>One time only</option></select></div></div>'+
-  (freq==='monthly'
-    ? '<div class="field"><label for="b-day">'+(isIn?'Arrives on day':'Due day of the month')+'</label><input id="b-day" name="dueDay" type="number" inputmode="numeric" min="1" max="31" required placeholder="1–31" value="'+esc(v.dueDay)+'"><span class="hint">Day 31 falls on the last day in shorter months. Paid twice a month? Add it twice (e.g. day 15 and day 30).</span></div>'+
-      (f.id?'':'<label class="check"><input type="checkbox" id="b-paidnow" name="paidNow"'+(v.paidNow?' checked':'')+'> '+(isIn?'I already received this month’s':'I already paid this month’s bill')+'</label>')
-    : '<div class="field"><label for="b-date">'+(isIn?'Expected date':'Due date')+'</label><input id="b-date" name="dueDate" type="date" required value="'+esc(v.dueDate||iso(today()))+'"></div>')+
+  '<div class="grid2"><div class="field"><label for="b-amount">'+'Usual amount (₱)'+'</label><input id="b-amount" name="amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="Optional" value="'+esc(v.amount)+'"></div>'+
+  '<div class="field"><label for="b-freq">Repeats</label><select id="b-freq" name="freq" data-action="freq">'+FREQ_OPTS.map(([k,t])=>'<option value="'+k+'"'+(freq===k?' selected':'')+'>'+t+'</option>').join('')+'</select></div></div>'+
+  when+
   '<div class="field"><label for="b-note">Note</label><textarea id="b-note" name="note" maxlength="300" placeholder="'+(isIn?'Where it comes from, which account it lands in':'Account number reminder, where you pay, etc.')+'">'+esc(v.note)+'</textarea></div>'+
   '<div class="formactions"><button type="button" class="btn" data-action="cancel-form">Cancel</button><button class="btn primary" type="submit">'+(f.id?'Save changes':'Add '+item)+'</button></div></form>';
 }
+// Record a payment: a bill/income period, or money towards a loan or debt.
+function payForm(){
+  const f=S.form, v=f.values||{};
+  let title, sub, btn, max='', hint='';
+  if(f.kind==='bill'){
+    const b=find('bills',f.id), T=TXT[dirOf(b)];
+    title=esc(b.name); sub=(b.freq==='once'?'':periodLabel(b,f.key)+' · ')+(dirOf(b)==='in'?'Record what you received':'Record what you paid'); btn='Mark '+T.paid;
+  } else {
+    const l=find('loans',f.id), i=loanInfo(l), o=owes(l);
+    title=esc(l.friend); sub=money(i.remaining)+' left '+(o?'to pay':'to collect'); btn=o?'Save payment':'Save';
+    max=' max="'+i.remaining+'"'; hint='<p class="hint">Enter less than '+money(i.remaining)+' for a partial payment.</p>';
+  }
+  return '<form class="editor" data-form="pay"><div><h3 id="sheet-h">'+title+'</h3><p class="hint sub">'+sub+'</p></div>'+
+  '<div class="grid2"><div class="field"><label for="p-amount">Amount (₱)</label><input id="p-amount" name="amount" type="number" inputmode="decimal" min="0.01" step="0.01"'+max+(f.kind==='loan'?' required':' placeholder="Optional"')+' value="'+esc(v.amount)+'"></div>'+
+  '<div class="field"><label for="p-date">Date</label><input id="p-date" name="date" type="date" required max="'+iso(today())+'" value="'+esc(v.date)+'"></div></div>'+hint+
+  '<div class="field"><label for="p-ref">Reference or note</label><input id="p-ref" name="ref" maxlength="80" placeholder="GCash or Maya ref no., OR number…" value="'+esc(v.ref)+'"></div>'+
+  '<div class="formactions"><button type="button" class="btn" data-action="cancel-form">Cancel</button><button class="btn primary" type="submit">'+btn+'</button></div></form>';
+}
 
-function loansView(){
-  const ready=S.loaded.loans||!S.live;
-  let h='<div class="bar gap" id="loans-h"><h2>Friends owe you</h2>'+(S.readOnly?'':'<button class="btn soft small" data-action="new-loan">+ Add loan</button>')+'</div>';
-  const withI=S.loans.map(l=>({l,i:loanInfo(l)}));
+function loansView(dir){
+  const ready=S.loaded.loans||!S.live, o=dir==='out';
+  const mine=S.loans.filter(l=>(owes(l)?'out':'in')===dir);
+  let h='<div class="bar gap" id="'+(o?'owe-h':'loans-h')+'"><h2>'+(o?'You owe':'Friends owe you')+'</h2>'+(S.readOnly?'':'<button class="btn soft small" data-action="new-loan" data-dir="'+dir+'">'+(o?'+ Add debt':'+ Add loan')+'</button>')+'</div>';
+  const withI=mine.map(l=>({l,i:loanInfo(l)}));
   const open=withI.filter(x=>!x.i.settled).sort((a,b)=>{
     const pa=a.i.promise?a.i.promise.date:null, pb=b.i.promise?b.i.promise.date:null;
     if(pa&&pb) return pa-pb; if(pa) return -1; if(pb) return 1; return (a.l.lentDate||'').localeCompare(b.l.lentDate||'');
@@ -472,54 +568,85 @@ function loansView(){
   const done=withI.filter(x=>x.i.settled).sort((a,b)=>(b.l.settledOn||'').localeCompare(a.l.settledOn||''));
   h+='<div class="panel">';
   if(!ready) h+='<div class="empty">Loading…</div>';
-  else if(!S.loans.length) h+='<div class="empty"><strong>No loans recorded</strong>Log who borrowed, how much, and when they said they’d pay you back.</div>';
+  else if(!mine.length) h+=o?'<div class="empty"><strong>Nothing you owe</strong>Record money you borrowed and when you said you’d pay it back.</div>'
+    :'<div class="empty"><strong>No loans recorded</strong>Log who borrowed, how much, and when they said they’d pay you back.</div>';
   else {
     h+='<ul class="list">'+open.map(x=>loanRow(x.l,x.i)).join('')+'</ul>';
-    if(!open.length) h+='<div class="empty"><strong>Everyone has paid you back</strong>No open loans.</div>';
-    if(done.length) h+='<details class="settled"><summary>Paid back ('+done.length+')</summary><ul class="list">'+done.map(x=>loanRow(x.l,x.i)).join('')+'</ul></details>';
+    if(!open.length) h+=o?'<div class="empty"><strong>All paid off</strong>You don’t owe anyone right now.</div>':'<div class="empty"><strong>Everyone has paid you back</strong>No open loans.</div>';
+    if(done.length) h+='<details class="settled"><summary>'+(o?'Paid off':'Paid back')+' ('+done.length+')</summary><ul class="list">'+done.map(x=>loanRow(x.l,x.i)).join('')+'</ul></details>';
   }
   return h+'</div>';
 }
 function loanRow(l,i){
-  const id=esc(l.id), t=today();
+  const id=esc(l.id), t=today(), o=owes(l);
   const lent=parseD(l.lentDate);
   const ago=lent?diffDays(lent,t):null;
   let pill;
-  if(i.settled) pill='<span class="pill done">Paid back'+(l.settledOn?' '+fmtShort(parseD(l.settledOn)):'')+'</span>';
+  if(i.settled) pill='<span class="pill done">'+(o?'Paid off':'Paid back')+(l.settledOn?' '+fmtShort(parseD(l.settledOn)):'')+'</span>';
   else if(i.promise){
     const d=i.promise.diff;
-    const txt=d<0?(-d)+(d===-1?' day':' days')+' past promise':d===0?'Promised today':d===1?'Promised tomorrow':'Promised in '+d+' days';
+    const txt=o?dueLabel(d):d<0?(-d)+(d===-1?' day':' days')+' past promise':d===0?'Promised today':d===1?'Promised tomorrow':'Promised in '+d+' days';
     pill='<span class="pill '+i.promise.kind+'">'+txt+'</span>';
-  } else pill='<span class="pill later">No payback date</span>';
+  } else pill='<span class="pill later">'+(o?'No due date':'No payback date')+'</span>';
   const pct=Number(l.amount)?Math.min(100,Math.round(i.paid/Number(l.amount)*100)):0;
   let tick;
   if(S.readOnly||i.settled) tick='<span class="tick'+(i.settled?' on':'')+'">'+CHECK+'</span>';
-  else tick='<button class="tick'+(i.promise&&i.promise.kind==='overdue'?' due':'')+'" data-action="settle" data-id="'+id+'" aria-label="Paid in full: '+esc(l.friend)+'" title="Paid in full">'+CHECK+'</button>';
+  else tick='<button class="tick'+(i.promise&&i.promise.kind==='overdue'?' due':'')+'" data-action="pay-loan" data-id="'+id+'" aria-label="Record a payment: '+esc(l.friend)+'" title="Record a payment">'+CHECK+'</button>';
   const facts=[];
-  if(lent) facts.push('Lent '+fmt(lent)+(ago>0?' · '+plural(ago,'day','days')+' ago':''));
-  if(i.promise) facts.push('Promised to pay by '+fmt(i.promise.date));
-  if(i.paid>0) facts.push(money(i.paid)+' of '+money(l.amount)+' returned');
+  if(lent) facts.push((o?'Borrowed ':'Lent ')+money(l.amount)+' on '+fmt(lent)+(ago>0?' · '+plural(ago,'day','days')+' ago':''));
+  if(i.promise) facts.push((o?'Pay back by ':'Promised to pay by ')+fmt(i.promise.date));
+  if(i.paid>0) facts.push(money(i.paid)+' of '+money(l.amount)+(o?' paid back':' returned'));
+  const paid=(l.payments||[]).slice().reverse().slice(0,5).map(p=>(o?'You paid ':'Got ')+payLine(p.date,p.amount,p.ref));
   let acts='';
   if(!S.readOnly){
     if(S.confirmDel===l.id) acts=confirmActs(id,'record','del-loan');
-    else if(S.payFor===l.id) acts='<form class="inline" data-form="pay" data-id="'+id+'"><input id="pay-amt" name="amt" type="number" inputmode="decimal" min="0.01" step="0.01" max="'+i.remaining+'" required placeholder="Amount" aria-label="Amount received"><button class="btn small primary" type="submit">Save</button><button type="button" class="btn small" data-action="cancel-pay">Cancel</button></form>';
     else if(!i.settled){
-      acts='<button class="btn small" data-action="part" data-id="'+id+'">Got part</button><button class="btn small" data-action="copy" data-id="'+id+'">Copy reminder</button><span class="spacer"></span><button class="btn small ghost" data-action="edit-loan" data-id="'+id+'">Edit</button><button class="btn small ghost" data-action="ask-del" data-id="'+id+'">Delete</button>';
+      acts=(o?'':'<button class="btn small" data-action="copy" data-id="'+id+'">Copy reminder</button>')+'<span class="spacer"></span><button class="btn small ghost" data-action="edit-loan" data-id="'+id+'">Edit</button><button class="btn small ghost" data-action="ask-del" data-id="'+id+'">Delete</button>';
     } else acts='<button class="btn small" data-action="reopen" data-id="'+id+'">Reopen</button><span class="spacer"></span><button class="btn small ghost" data-action="ask-del" data-id="'+id+'">Delete</button>';
   }
   const extra=!i.settled&&i.paid>0?'<span class="progress" aria-hidden="true"><span style="width:'+pct+'%"></span></span>':'';
-  return rowHtml({id:l.id,name:l.friend,example:l.example,inflow:!i.settled,amt:money(i.settled?l.amount:i.remaining),
-    meta:pill+(lent&&!i.settled?'<span>Lent '+fmtShort(lent)+'</span>':''),extra,tick,facts,note:l.note,acts});
+  return rowHtml({id:l.id,name:l.friend,example:l.example,inflow:!o&&!i.settled,amt:money(i.settled?l.amount:i.remaining),
+    meta:pill+(lent&&!i.settled?'<span>'+(o?'Borrowed ':'Lent ')+fmtShort(lent)+'</span>':''),extra,tick,facts,paid,note:l.note,acts});
 }
 function loanForm(){
-  const f=S.form, v=f.values||{};
-  return '<form class="editor" data-form="loan"><h3 id="sheet-h">'+(f.id?'Edit loan':'New loan')+'</h3>'+
-  '<div class="grid2"><div class="field"><label for="l-friend">Friend</label><input id="l-friend" name="friend" required maxlength="60" placeholder="Who borrowed" value="'+esc(v.friend)+'"></div>'+
+  const f=S.form, v=f.values||{}, o=f.dir==='out';
+  return '<form class="editor" data-form="loan"><h3 id="sheet-h">'+(f.id?(o?'Edit debt':'Edit loan'):(o?'Money you owe':'New loan'))+'</h3>'+
+  '<div class="grid2"><div class="field"><label for="l-friend">'+(o?'Lender':'Friend')+'</label><input id="l-friend" name="friend" required maxlength="60" placeholder="'+(o?'Who you borrowed from':'Who borrowed')+'" value="'+esc(v.friend)+'"></div>'+
   '<div class="field"><label for="l-amount">Amount (₱)</label><input id="l-amount" name="amount" type="number" inputmode="decimal" min="0.01" step="0.01" required value="'+esc(v.amount)+'"></div></div>'+
-  '<div class="grid2"><div class="field"><label for="l-date">Date lent</label><input id="l-date" name="lentDate" type="date" required value="'+esc(v.lentDate||iso(today()))+'"></div>'+
-  '<div class="field"><label for="l-promise">Promised to pay by</label><input id="l-promise" name="promiseDate" type="date" value="'+esc(v.promiseDate)+'"></div></div>'+
+  '<div class="grid2"><div class="field"><label for="l-date">'+(o?'Date borrowed':'Date lent')+'</label><input id="l-date" name="lentDate" type="date" required value="'+esc(v.lentDate||iso(today()))+'"></div>'+
+  '<div class="field"><label for="l-promise">'+(o?'Pay back by':'Promised to pay by')+'</label><input id="l-promise" name="promiseDate" type="date" value="'+esc(v.promiseDate)+'"></div></div>'+
   '<div class="field"><label for="l-note">Note</label><textarea id="l-note" name="note" maxlength="300" placeholder="What it was for, GCash or cash, etc.">'+esc(v.note)+'</textarea></div>'+
-  '<div class="formactions"><button type="button" class="btn" data-action="cancel-form">Cancel</button><button class="btn primary" type="submit">'+(f.id?'Save changes':'Add loan')+'</button></div></form>';
+  '<div class="formactions"><button type="button" class="btn" data-action="cancel-form">Cancel</button><button class="btn primary" type="submit">'+(f.id?'Save changes':(o?'Add debt':'Add loan'))+'</button></div></form>';
+}
+
+/* ---------- history ---------- */
+function historyView(){
+  const cur=ym(today()), key=S.histMonth||cur;
+  const all=ledger(), inMonth=k=>all.filter(x=>x.date.slice(0,7)===k);
+  const rows=inMonth(key);
+  const [y,m]=key.split('-').map(Number), prevKey=ym(new Date(y,m-2,1)), nextKey=ym(new Date(y,m,1));
+  const sum=(arr,d)=>arr.filter(x=>x.dir===d).reduce((a,x)=>a+(Number(x.amount)||0),0);
+  const out=sum(rows,'out'), inn=sum(rows,'in'), prevOut=sum(inMonth(prevKey),'out'), net=inn-out;
+  let cmp='&nbsp;';
+  if(prevOut>0){ const pct=Math.round((out-prevOut)/prevOut*100); cmp=pct===0?'Same as '+monthName(prevKey):Math.abs(pct)+'% '+(pct>0?'more':'less')+' than '+monthName(prevKey); }
+  const title=new Date(y,m-1,1).toLocaleDateString('en-PH',{month:'long',year:'numeric'});
+  let h='<div class="bar"><h2>History</h2><button class="btn soft small" data-action="export-csv">Download CSV</button></div>';
+  h+='<div class="panel">'+
+    '<div class="monthnav"><button class="btn ghost" data-action="hist-month" data-month="'+prevKey+'" aria-label="Previous month">‹</button><b>'+title+'</b>'+
+    '<button class="btn ghost" data-action="hist-month" data-month="'+nextKey+'" aria-label="Next month"'+(key>=cur?' disabled':'')+'>›</button></div>'+
+    '<div class="cols totals"><div class="fig"><span class="k">Money out</span><span class="v">'+money(out)+'</span><span class="s">'+cmp+'</span></div>'+
+    '<div class="fig in"><span class="k">Money in</span><span class="v">'+money(inn)+'</span><span class="s">Net '+(net<0?'−':'+')+money(Math.abs(net))+'</span></div></div>';
+  if(!rows.length) h+='<div class="empty"><strong>Nothing recorded</strong>Payments you record in '+monthName(key)+' show up here.</div>';
+  else h+='<ul class="list ledger">'+rows.map(x=>'<li class="lrow"><span class="d">'+fmtShort(parseD(x.date))+'</span><span class="w"><b>'+esc(x.name)+'</b><span>'+esc(x.what)+(x.ref?' · '+esc(x.ref):'')+'</span></span>'+
+    '<span class="a '+x.dir+'">'+(x.dir==='in'?'+':'−')+(x.amount!=null&&x.amount!==''?money(x.amount):'—')+'</span></li>').join('')+'</ul>';
+  return h+'</div>';
+}
+function exportCsv(){
+  // Prefix cells a spreadsheet would treat as a formula.
+  const cell=v=>{ let s=String(v??''); if(/^[=+\-@\t\r]/.test(s)) s="'"+s; return /[",\n\r]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; };
+  const rows=[['Date','Direction','Type','Name','Amount','Reference']].concat(ledger().map(x=>[x.date,x.dir==='in'?'In':'Out',x.what,x.name,x.amount??'',x.ref]));
+  downloadBlob(new Blob(['﻿'+rows.map(r=>r.map(cell).join(',')).join('\r\n')],{type:'text/csv'}),'bayad-payments-'+iso(today())+'.csv');
+  toast('Payments downloaded');
 }
 
 /* ---------- storage: SQLite database on this device ---------- */
@@ -538,7 +665,7 @@ function examples(){
   const t=today(), cur=ym(t), at=n=>{const x=new Date(t);x.setDate(x.getDate()+n);return x;}, d=n=>iso(at(n));
   return {
     bills:[
-      {id:'ex-electric',example:true,dir:'out',name:'Electric bill',amount:2800,freq:'monthly',dueDay:5,startMonth:cur,paid:{[cur]:iso(t)},note:''},
+      {id:'ex-electric',example:true,dir:'out',name:'Electric bill',amount:2800,freq:'monthly',dueDay:5,startMonth:cur,paid:{[cur]:{on:iso(t),amount:2950,ref:'GCash 4417'}},note:''},
       {id:'ex-internet',example:true,dir:'out',name:'Internet',amount:1699,freq:'monthly',dueDay:at(2).getDate(),startMonth:ym(at(2)),paid:{},note:''},
       {id:'ex-salary',example:true,dir:'in',name:'Salary',amount:15000,freq:'monthly',dueDay:at(3).getDate(),startMonth:ym(at(3)),paid:{},note:''}
     ],
@@ -576,34 +703,38 @@ document.addEventListener('click',e=>{
   const el=e.target.closest('[data-action]'); if(!el || el.tagName==='SELECT') return;
   const a=el.dataset.action, id=el.dataset.id;
   if(a==='tab'){
-    if(S.tab!==el.dataset.tab){ S.tab=el.dataset.tab; S.form=null; S.payFor=null; S.confirmDel=null; S.open=null; try{localStorage.setItem('bayad-tab',S.tab)}catch(_){} render(); }
+    if(S.tab!==el.dataset.tab){ S.tab=el.dataset.tab; S.form=null; S.confirmDel=null; S.open=null; try{localStorage.setItem('bayad-tab',S.tab)}catch(_){} render(); }
     const to=document.getElementById(el.dataset.scroll||(el.closest('.summary')?'main':''));
     if(to) to.scrollIntoView({behavior:'smooth',block:'start'});
     return;
   }
-  if(a==='toggle'){ S.open=S.open===id?null:id; S.payFor=null; S.confirmDel=null; render(); return; }
+  if(a==='toggle'){ S.open=S.open===id?null:id; S.confirmDel=null; render(); return; }
   if(a==='goto-settings'){ document.getElementById('settings').scrollIntoView({behavior:'smooth',block:'start'}); return; }
+  if(a==='hist-month'){ S.histMonth=el.dataset.month; render(); return; }
+  if(a==='export-csv'){ exportCsv(); return; }
   if(a==='new-bill'){ S.form={type:'bill',dir:el.dataset.dir||'out',values:{freq:'monthly'}}; render(); return; }
-  if(a==='new-loan'){ S.form={type:'loan',values:{}}; render(); return; }
-  if(a==='edit-bill'){ const b=find('bills',id); S.form={type:'bill',dir:dirOf(b),id,values:clone(b)}; render(); return; }
-  if(a==='edit-loan'){ const l=find('loans',id); S.form={type:'loan',id,values:clone(l)}; render(); return; }
-  if(a==='cancel-form'){ S.form=null; render(); return; }
-  if(a==='ask-del'){ S.confirmDel=id; S.payFor=null; render(); return; }
-  if(a==='cancel-del'){ S.confirmDel=null; render(); return; }
-  if(a==='del-bill'){ S.confirmDel=null; remove('bills',id); toast('Bill deleted'); return; }
-  if(a==='del-loan'){ S.confirmDel=null; remove('loans',id); toast('Loan record deleted'); return; }
-  if(a==='pay-bill'){
-    const b=clone(find('bills',id)); const s=billStatus(b); const pw=TXT[dirOf(b)].paid;
-    if(b.freq==='once'){ b.paidOn=iso(today()); save('bills',b); toast(b.name+' marked '+pw,()=>{ const c=clone(b); delete c.paidOn; save('bills',c); }); }
-    else { b.paid=Object.assign({},b.paid||{}); b.paid[s.key]=iso(today()); save('bills',b); toast(monthName(s.key)+' '+b.name+' marked '+pw,()=>{ const c=clone(b); delete c.paid[s.key]; save('bills',c); }); }
-    return;
+  if(a==='new-loan'){ S.form={type:'loan',dir:el.dataset.dir||'in',values:{}}; render(); return; }
+  if(a==='edit-bill'){
+    const b=find('bills',id), v=clone(b);
+    if(b.freq!=='once' && byDate(b.freq)) v.dueDate=iso(billStatus(b).date); // edit from the next due date
+    S.form={type:'bill',dir:dirOf(b),id,values:v}; render(); return;
   }
-  if(a==='unpay-once'){ const b=clone(find('bills',id)); delete b.paidOn; save('bills',b); return; }
-  if(a==='unpay-month'){ const b=clone(find('bills',id)); const k=lastPaidKey(b); if(k){ delete b.paid[k]; save('bills',b); toast(monthName(k)+' marked unpaid'); } return; }
-  if(a==='settle'){ const l=clone(find('loans',id)); const i=loanInfo(l); l.payments=(l.payments||[]).concat([{amount:i.remaining,date:iso(today())}]); l.settledOn=iso(today()); save('loans',l);
-    toast(l.friend+' paid you back',()=>{ const c=clone(l); c.payments.pop(); delete c.settledOn; save('loans',c); }); return; }
-  if(a==='part'){ S.payFor=id; S.confirmDel=null; render(); const inp=document.getElementById('pay-amt'); if(inp) inp.focus(); return; }
-  if(a==='cancel-pay'){ S.payFor=null; render(); return; }
+  if(a==='edit-loan'){ const l=find('loans',id); S.form={type:'loan',dir:owes(l)?'out':'in',id,values:clone(l)}; render(); return; }
+  if(a==='cancel-form'){ S.form=null; render(); return; }
+  if(a==='ask-del'){ S.confirmDel=id; render(); return; }
+  if(a==='cancel-del'){ S.confirmDel=null; render(); return; }
+  if(a==='del-bill'){ S.confirmDel=null; remove('bills',id); toast('Deleted'); return; }
+  if(a==='del-loan'){ S.confirmDel=null; remove('loans',id); toast('Record deleted'); return; }
+  if(a==='pay-bill'){
+    const b=find('bills',id), s=billStatus(b);
+    S.form={type:'pay',kind:'bill',id,key:s.key,values:{amount:b.amount??'',date:iso(today()),ref:''},_focused:b.amount!=null}; render(); return;
+  }
+  if(a==='pay-loan'){
+    const l=find('loans',id), i=loanInfo(l);
+    S.form={type:'pay',kind:'loan',id,values:{amount:i.remaining,date:iso(today()),ref:''},_focused:true}; render(); return;
+  }
+  if(a==='unpay-once'){ const b=clone(find('bills',id)); delete b.paidOn; delete b.paidAmount; delete b.paidRef; save('bills',b); return; }
+  if(a==='unpay-month'){ const b=clone(find('bills',id)); const k=lastPaidKey(b); if(k){ delete b.paid[k]; save('bills',b); toast(periodLabel(b,k)+' marked un'+TXT[dirOf(b)].paid); } return; }
   if(a==='reopen'){ const l=clone(find('loans',id)); l.payments=[]; delete l.settledOn; save('loans',l); return; }
   if(a==='copy'){
     const l=find('loans',id), i=loanInfo(l); const lent=parseD(l.lentDate);
@@ -628,6 +759,7 @@ document.addEventListener('change',e=>{
   if(e.target.id==='b-freq' && S.form){ S.form.values=Object.assign(readForm(e.target.form),{freq:e.target.value}); S.form._focused=true; render(); }
 });
 function readForm(form){ const o={}; new FormData(form).forEach((v,k)=>o[k]=v); return o; }
+const clampDay = x => Math.min(31,Math.max(1,parseInt(x,10)||1));
 document.addEventListener('submit',e=>{
   const form=e.target; e.preventDefault();
   const kind=form.dataset.form;
@@ -635,28 +767,49 @@ document.addEventListener('submit',e=>{
     const v=readForm(form); const f=S.form;
     const base=f.id?clone(find('bills',f.id)):{id:uid(),created:new Date().toISOString(),paid:{}};
     base.dir=f.dir||'out'; base.name=v.name.trim(); base.amount=v.amount===''?null:Number(v.amount); base.freq=v.freq; base.note=(v.note||'').trim();
-    if(base.freq==='monthly'){
-      base.dueDay=Math.min(31,Math.max(1,parseInt(v.dueDay,10)||1)); delete base.dueDate;
+    delete base.dueDay; delete base.dueDay2; delete base.dueDate;
+    if(base.freq==='monthly'||base.freq==='twice'){
+      base.dueDay=clampDay(v.dueDay);
+      if(base.freq==='twice'){ const d2=clampDay(v.dueDay2); base.dueDay2=Math.max(base.dueDay,d2); base.dueDay=Math.min(base.dueDay,d2); }
       if(!base.startMonth) base.startMonth=ym(today());
       base.paid=base.paid||{};
-      if(!f.id && v.paidNow) base.paid[ym(today())]=iso(today());
-    } else { base.dueDate=v.dueDate; delete base.dueDay; }
+      if(!f.id && v.paidNow && base.freq==='monthly') base.paid[ym(today())]=iso(today());
+    } else if(base.freq==='quarterly'||base.freq==='yearly'){
+      const d=parseD(v.dueDate)||today(); base.startMonth=ym(d); base.dueDay=d.getDate(); base.paid=base.paid||{};
+    } else { base.dueDate=v.dueDate; if(base.freq!=='once') base.paid=base.paid||{}; }
     delete base.example;
     const nm=base.dir==='in'?'Income':'Bill';
     S.form=null; save('bills',base); toast(f.id?nm+' updated':nm+' added');
   } else if(kind==='loan'){
     const v=readForm(form); const f=S.form;
     const base=f.id?clone(find('loans',f.id)):{id:uid(),created:new Date().toISOString(),payments:[]};
+    base.dir=f.dir==='out'?'out':'in';
     base.friend=v.friend.trim(); base.amount=Number(v.amount); base.lentDate=v.lentDate; base.promiseDate=v.promiseDate||null; base.note=(v.note||'').trim();
     delete base.example;
     const i=loanInfo(base); if(i.settled && !base.settledOn) base.settledOn=iso(today()); if(!i.settled) delete base.settledOn;
-    S.form=null; save('loans',base); toast(f.id?'Loan updated':'Loan added');
+    S.form=null; save('loans',base); toast((base.dir==='out'?'Debt':'Loan')+(f.id?' updated':' added'));
   } else if(kind==='pay'){
-    const l=clone(find('loans',form.dataset.id)); const amt=Number(form.amt.value); if(!(amt>0)) return;
-    l.payments=(l.payments||[]).concat([{amount:amt,date:iso(today())}]);
-    const i=loanInfo(l); if(i.settled) l.settledOn=iso(today());
-    S.payFor=null; save('loans',l);
-    toast(i.settled?l.friend+' paid you back in full':money(amt)+' received from '+l.friend);
+    const v=readForm(form), f=S.form, amt=v.amount===''?null:Number(v.amount), date=v.date||iso(today()), ref=(v.ref||'').trim();
+    if(f.kind==='bill'){
+      const prev=find('bills',f.id), b=clone(prev), pw=TXT[dirOf(b)].paid;
+      if(b.freq==='once'){
+        b.paidOn=date;
+        if(amt!=null) b.paidAmount=amt; else delete b.paidAmount;
+        if(ref) b.paidRef=ref; else delete b.paidRef;
+      } else {
+        b.paid=Object.assign({},b.paid||{});
+        b.paid[f.key]=amt==null&&!ref?date:Object.assign({on:date},amt!=null?{amount:amt}:{},ref?{ref}:{});
+      }
+      S.form=null; save('bills',b);
+      toast((b.freq==='once'?'':periodLabel(b,f.key)+' ')+b.name+' marked '+pw,()=>save('bills',clone(prev)));
+    } else {
+      if(!(amt>0)) return;
+      const prev=find('loans',f.id), l=clone(prev), o=owes(l);
+      l.payments=(l.payments||[]).concat([Object.assign({amount:amt,date},ref?{ref}:{})]);
+      const i=loanInfo(l); if(i.settled) l.settledOn=date;
+      S.form=null; save('loans',l);
+      toast(i.settled?(o?'Paid off '+l.friend:l.friend+' paid you back in full'):money(amt)+(o?' paid to ':' received from ')+l.friend,()=>save('loans',clone(prev)));
+    }
   }
 });
 
@@ -698,7 +851,7 @@ async function checkAccount(){
 }
 function applyData(d){
   S.bills=d.bills; S.loans=d.loans;
-  if(S.form||S.payFor||S.confirmDel){ S.needsRender=true; renderSummary(); } else render();
+  if(S.form||S.confirmDel){ S.needsRender=true; renderSummary(); } else render();
 }
 function scheduleSync(ms){ clearTimeout(SYNC.timer); if(SYNC.signedIn) SYNC.timer=setTimeout(syncNow,ms); }
 async function syncNow(){
@@ -713,7 +866,10 @@ async function syncNow(){
       if(!r.ok) throw new Error('http '+r.status);
       const j=await r.json();
       const before=S.writeSeq||0;
-      let d=await call('applyRemote',{pushed:p.changes.map(c=>({kind:c.kind,id:c.id,updated_at:c.updated_at})),changes:j.changes,cursor:j.cursor});
+      // Changes the server turned away (account full) stay queued on this device.
+      const rejected=new Set((j.rejected||[]).map(c=>c.kind+':'+c.id));
+      if(j.full && !SYNC.fullWarned){ SYNC.fullWarned=true; toast('Your synced storage is full, so new entries stay on this phone only. Delete old entries to make room.'); }
+      let d=await call('applyRemote',{pushed:p.changes.filter(c=>!rejected.has(c.kind+':'+c.id)).map(c=>({kind:c.kind,id:c.id,updated_at:c.updated_at})),changes:j.changes,cursor:j.cursor});
       if((S.writeSeq||0)!==before) d=await call('readAll');
       applyData(d);
       more=!!j.more || (p.changes.length>0 && (await call('pending')).changes.length>0 && rounds<3);

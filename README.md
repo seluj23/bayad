@@ -44,13 +44,17 @@ The privacy policy describes what this code does. If you change what the app col
 5. **Domains:** add your domain, container port **3000**, with HTTPS on.
 6. Deploy, then open the domain on your phone, install the app, and tap **Sign in with Google** under *Sync, backup & install*.
 
+## Limits
+
+Each account can sync up to 5000 bills, income entries and loans (`MAX_RECORDS_PER_USER`). Past that, new entries stay on the phone and the app says the synced storage is full. Sign-in is limited to 30 requests a minute per address, the API to 300, and syncing to 120 per account.
+
 ## Updating the app
 
 After changing anything in `public/`, bump `VERSION` in `public/sw.js` (e.g. `bayad-v4`) so installed copies pick up the new files.
 
 ## Backups
 
-- **Server:** copy `/data/bayad-server.sqlite3` from the volume.
+- **Server:** once a day the server writes a snapshot to `/data/backups/bayad-YYYY-MM-DD.sqlite3` and keeps the last 7 (`BACKUP_KEEP`). These sit on the same volume, so they protect against bad deletes and a corrupted file but not against losing the volume. For that, turn on Dokploy's volume backups to S3 (or any S3-compatible storage) for the `/data` volume. To restore, stop the app, replace `bayad-server.sqlite3` with a snapshot, and start it again.
 - **Phone:** *Download database (.sqlite)* in the app.
 
 ## Run locally
