@@ -60,6 +60,7 @@ const q = {
   userBySub: db.prepare('SELECT * FROM users WHERE google_sub = ?'),
   addUser: db.prepare('INSERT INTO users (google_sub, email, created) VALUES (?, ?, ?)'),
   setEmail: db.prepare('UPDATE users SET email = ? WHERE id = ?'),
+  deleteUser: db.prepare('DELETE FROM users WHERE id = ?'), // sessions and records go with it (ON DELETE CASCADE)
   addSession: db.prepare('INSERT INTO sessions (token_hash, user_id, created, expires) VALUES (?, ?, ?, ?)'),
   session: db.prepare('SELECT u.id, u.email FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires > ?'),
   dropSession: db.prepare('DELETE FROM sessions WHERE token_hash = ?'),
@@ -239,6 +240,13 @@ const server = http.createServer(async (req, res) => {
       }
       if (p === '/api/logout' && req.method === 'POST') {
         const t = cookies(req).bayad_session; if (t) q.dropSession.run(sha(t));
+        return send(res, 200, { ok: true }, { 'Set-Cookie': cookie('bayad_session', '', 0) });
+      }
+      if (p === '/api/delete-account' && req.method === 'POST') {
+        const u = currentUser(req);
+        if (!u) return send(res, 401, { error: 'signed_out' });
+        q.deleteUser.run(u.id);
+        console.log('[bayad] account deleted: user', u.id);
         return send(res, 200, { ok: true }, { 'Set-Cookie': cookie('bayad_session', '', 0) });
       }
       if (p === '/api/sync' && req.method === 'POST') {

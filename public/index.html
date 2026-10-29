@@ -186,6 +186,11 @@ details.settled .row{opacity:.7}
 .acct{display:flex;align-items:center;gap:10px;min-width:0}
 .acct .avatar{width:34px;height:34px;border-radius:50%;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;font-weight:700;flex:none;text-transform:uppercase}
 .acct b{display:block;overflow-wrap:anywhere;font-size:14px}
+.tools-sync .spacer{flex:1}
+.confirm{display:flex;flex-direction:column;gap:10px;background:var(--danger-soft);border-radius:12px;padding:12px 14px}
+.confirm b{color:var(--danger)}
+.tools .confirm p{color:var(--ink)}
+.btn.danger-fill{background:var(--danger);border-color:var(--danger);color:var(--surface)}
 details.backup{border-top:1px solid var(--line);padding-top:4px}
 details.backup summary{list-style:none;display:flex;justify-content:space-between;align-items:center;cursor:pointer;font-weight:600;font-size:14px;padding:8px 0}
 details.backup summary::-webkit-details-marker{display:none}
@@ -358,7 +363,7 @@ function renderSummary(){
   let owed=0,ppl=new Set();
   S.loans.forEach(l=>{ const i=loanInfo(l); if(!i.settled){ owed+=i.remaining; ppl.add((l.friend||'').trim().toLowerCase()); } });
   let h='';
-  if(odN) h+='<button class="alertbar" data-action="tab" data-tab="out"><span>'+money(od)+' overdue · '+plural(odN,'bill','bills')+'</span>'+GO+'</button>';
+  if(odN) h+='<button class="alertbar" data-action="tab" data-tab="out"><span>'+(od?money(od)+' overdue · '+plural(odN,'bill','bills'):plural(odN,'bill','bills')+' overdue')+'</span>'+GO+'</button>';
   h+='<div class="week"><span class="lbl">Next 7 days</span><div class="cols">'+
     '<button class="fig" data-action="tab" data-tab="out"><span class="k">To pay</span><span class="v">'+money(wk)+'</span><span class="s">'+(wkN?plural(wkN,'bill','bills'):'Nothing due')+'</span></button>'+
     '<button class="fig in" data-action="tab" data-tab="in"><span class="k">Coming in</span><span class="v">'+money(inc)+'</span><span class="s">'+(incN?plural(incN,'payment','payments'):'Nothing expected')+'</span></button></div></div>';
@@ -704,7 +709,7 @@ async function syncNow(){
     while(more && rounds++<20){
       const p=await call('pending');
       const r=await fetch('/api/sync',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Bayad':'1'},body:JSON.stringify({since:p.cursor,changes:p.changes})});
-      if(r.status===401){ SYNC.signedIn=false; rememberSync(); toast('You were signed out. Sign in again to keep syncing.'); break; }
+      if(r.status===401){ SYNC.signedIn=false; rememberSync(); try{ await call('resetSync'); }catch(_){} toast('You were signed out. Sign in again to keep syncing.'); break; }
       if(!r.ok) throw new Error('http '+r.status);
       const j=await r.json();
       const before=S.writeSeq||0;
@@ -724,6 +729,25 @@ async function signOut(){
   SYNC.signedIn=false; SYNC.email=null; SYNC.last=null; rememberSync(); renderSync();
   toast('Signed out. Your entries stay on this phone.');
 }
+async function deleteAccount(){
+  if(SYNC.busy) return;
+  SYNC.busy=true; renderSync();
+  let r=null;
+  try{ r=await fetch('/api/delete-account',{method:'POST',credentials:'same-origin',headers:{'X-Bayad':'1'}}); }catch(_){}
+  if(!r || !r.ok){
+    SYNC.busy=false;
+    if(r && r.status===401){ SYNC.signedIn=false; SYNC.confirmDelete=false; rememberSync(); renderSync(); toast('You’re signed out. Sign in again, then delete your account.'); }
+    else { renderSync(); toast('Couldn’t delete your account. Check your connection and try again.'); }
+    return;
+  }
+  const erase=SYNC.eraseLocal;
+  try{
+    if(erase){ const d=await call('replaceAll',{bills:[],loans:[]}); S.bills=d.bills; S.loans=d.loans; render(); }
+    await call('resetSync');
+  }catch(_){}
+  Object.assign(SYNC,{busy:false,signedIn:false,email:null,last:null,confirmDelete:false,eraseLocal:false}); rememberSync(); renderSync();
+  toast(erase?'Account deleted, and this phone was erased.':'Account deleted. Your entries stay on this phone.');
+}
 function renderSync(){
   const box=document.getElementById('syncbox');
   if(box){
@@ -733,8 +757,13 @@ function renderSync(){
       const off=!navigator.onLine;
       box.innerHTML = SYNC.signedIn
         ? '<div class="acct"><span class="avatar" aria-hidden="true">'+esc((SYNC.email||'?')[0])+'</span><div><b>'+esc(SYNC.email||'')+'</b><span class="hint">'+(SYNC.busy?'Syncing…':SYNC.err?'Last sync failed; it will retry.':SYNC.last?'Last synced '+ago(SYNC.last)+'.':'Not synced yet.')+'</span></div></div>'+
-          '<div class="inline"><button class="btn" data-action="sync-now"'+(off||SYNC.busy?' disabled':'')+'>Sync now</button><button class="btn ghost" data-action="sign-out"'+(off?' disabled':'')+'>Sign out</button></div>'
-        : '<p>Sign in to keep your entries in sync across your phone and other devices. They’re stored on this app’s server.</p>'+
+          (SYNC.confirmDelete
+            ? '<div class="confirm" role="alert"><b>Delete your account?</b><p>Your account and every synced entry are removed from the server for good. Other devices are signed out. This can’t be undone.</p>'+
+              '<label class="check"><input type="checkbox" id="erase-local"'+(SYNC.eraseLocal?' checked':'')+'> Also erase the entries on this phone</label>'+
+              '<div class="inline"><button class="btn danger-fill" data-action="delete-account"'+(off||SYNC.busy?' disabled':'')+'>'+(SYNC.busy?'Deleting…':'Delete account')+'</button><button class="btn" data-action="cancel-delete-account">Cancel</button></div></div>'
+            : '<div class="inline"><button class="btn" data-action="sync-now"'+(off||SYNC.busy?' disabled':'')+'>Sync now</button><button class="btn ghost" data-action="sign-out"'+(off?' disabled':'')+'>Sign out</button>'+
+              '<span class="spacer"></span><button class="btn ghost danger" data-action="ask-delete-account"'+(off?' disabled':'')+'>Delete account</button></div>')
+        :'<p>Sign in to keep your entries in sync across your phone and other devices. They’re stored on this app’s server.</p>'+
           (off?'<p class="hint">Connect to the internet to sign in.</p>':'<div class="inline"><a class="btn primary" href="/auth/google">Sign in with Google</a></div>'+
           '<p class="hint">By signing in you agree to the <a href="/terms">Terms of Service</a> and <a href="/privacy">Privacy Policy</a>.</p>');
     }
@@ -742,9 +771,15 @@ function renderSync(){
   netStatus();
 }
 document.addEventListener('click',e=>{
-  const el=e.target.closest('[data-action="sync-now"],[data-action="sign-out"]'); if(!el) return;
-  if(el.dataset.action==='sync-now') syncNow(); else signOut();
+  const el=e.target.closest('[data-action="sync-now"],[data-action="sign-out"],[data-action$="delete-account"]'); if(!el) return;
+  const a=el.dataset.action;
+  if(a==='sync-now') syncNow();
+  else if(a==='sign-out') signOut();
+  else if(a==='ask-delete-account'){ SYNC.confirmDelete=true; SYNC.eraseLocal=false; renderSync(); }
+  else if(a==='cancel-delete-account'){ SYNC.confirmDelete=false; renderSync(); }
+  else if(a==='delete-account') deleteAccount();
 });
+document.addEventListener('change',e=>{ if(e.target.id==='erase-local') SYNC.eraseLocal=e.target.checked; });
 (function(){
   const msg={signed_in:'Signed in. Syncing your entries…',cancelled:'Sign-in cancelled.',failed:'Sign-in didn’t work. Try again.',
     not_allowed:'That Google account isn’t allowed on this server.',unverified:'That Google account’s email isn’t verified.',not_configured:'Sync isn’t set up on the server yet.'};
