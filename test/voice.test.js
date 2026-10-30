@@ -51,3 +51,18 @@ test('leaves out what it did not hear', () => {
   assert.deepEqual(say('Water 450'), { amount: 450, category: 'utilities', name: 'Water' });
   assert.deepEqual(say(''), {});
 });
+
+test('the + menu tells bills, income, loans and debts apart', () => {
+  const g = text => V.guess(text, { today });
+  assert.deepEqual(g('Lent Juan 500, pay back by December 15'),
+    { type: 'loan', dir: 'in', values: { amount: 500, promiseDate: '2026-12-15', friend: 'Juan' } });
+  assert.deepEqual(g('Juan owes me 300'), { type: 'loan', dir: 'in', values: { amount: 300, friend: 'Juan' } });
+  assert.deepEqual(g('Pinahiram ko si Pedro 1500 kahapon'),
+    { type: 'loan', dir: 'in', values: { lentDate: '2026-10-29', amount: 1500, friend: 'Pedro' } });
+  assert.deepEqual(g('I owe Maria 2,000'), { type: 'loan', dir: 'out', values: { amount: 2000, friend: 'Maria' } });
+  assert.deepEqual(g('Utang ko kay Liza 800 hanggang November 15'),
+    { type: 'loan', dir: 'out', values: { amount: 800, promiseDate: '2026-11-15', friend: 'Liza' } });
+  assert.equal(g('Salary 15k every 15th and 30th').dir, 'in');
+  assert.deepEqual(g('Meralco 2,500 every 5th'), { type: 'bill', dir: 'out', values: { amount: 2500, dueDay: 5, category: 'utilities', name: 'Meralco' } });
+  assert.equal(g('Padala kay nanay 3000 kinsenas').dir, 'out');
+});

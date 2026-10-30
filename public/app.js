@@ -19,8 +19,10 @@ const S = { bills:[], loans:[], tab:'out', form:null, confirmDel:null, open:null
 try{ const t=localStorage.getItem('bayad-tab'); if(t==='in'||t==='out'||t==='history') S.tab=t; }catch(e){}
 const dirOf = b => b.dir==='in'?'in':'out';
 const plural = (n,one,many) => n+' '+(n===1?one:many);
+const PLUS='<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v11M2.5 8h11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 const MIC='<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
 const SpeechRec=window.SpeechRecognition||window.webkitSpeechRecognition;
+const IOS=/iP(hone|ad|od)/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
 const CHECK='<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const CHEV='<svg class="chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const GO='<svg class="go" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -123,13 +125,14 @@ function render(){
   document.getElementById('c-in').textContent=(openBills('in')+openLoans('in'))||'';
   const main=document.getElementById('main');
   main.innerHTML = S.tab==='history'?calendarView():billsView(S.tab)+loansView(S.tab);
+  document.getElementById('fab').hidden=S.readOnly;
   renderSheet();
   renderNotice();
 }
 function renderSheet(){
   const wrap=document.getElementById('sheet'), body=document.getElementById('sheet-body');
   if(S.form){
-    body.innerHTML=({bill:billForm,loan:loanForm,pay:payForm})[S.form.type]();
+    body.innerHTML=({add:addMenu,bill:billForm,loan:loanForm,pay:payForm})[S.form.type]();
     if(wrap.hidden){ wrap.hidden=false; document.body.classList.add('locked'); }
     const f=body.querySelector('input'); if(f && !S.form._focused){ f.focus(); S.form._focused=true; }
   } else if(!wrap.hidden){ wrap.hidden=true; body.innerHTML=''; document.body.classList.remove('locked'); }
@@ -186,7 +189,7 @@ function billsView(dir){
   const T=TXT[dir];
   const ready=S.loaded.bills||!S.live;
   const mine=S.bills.filter(b=>dirOf(b)===dir);
-  let h='<div class="bar"><h2>'+T.h+'</h2>'+(S.readOnly?'':'<button class="btn soft small" data-action="new-bill" data-dir="'+dir+'">'+T.add+'</button>')+'</div>';
+  let h='<div class="bar"><h2>'+T.h+'</h2></div>';
   const withS=mine.map(b=>({b,s:billStatus(b)}));
   const open=withS.filter(x=>x.s.kind!=='done').sort((a,b)=>a.s.date-b.s.date);
   const done=withS.filter(x=>x.s.kind==='done').sort((a,b)=>b.s.date-a.s.date);
@@ -243,6 +246,17 @@ function billRow(b,s){
   }
   return rowHtml({id:b.id,name:b.name,example:b.example,shared:!!b.scope,inflow:dir==='in',amt:b.amount?money(b.amount):'—',meta:pill+when,tick,facts,paid,note:b.note,acts});
 }
+// The floating + button: one place to add anything.
+function addMenu(){
+  const opt=(a,dir,t,sub)=>'<button type="button" class="addopt" data-action="'+a+'" data-dir="'+dir+'"><span class="t">'+t+'</span><span class="hint">'+sub+'</span></button>';
+  return '<form class="editor addmenu" data-form="quick"><h3 id="sheet-h">What do you want to add?</h3>'+
+    '<div class="field"><label for="q-say">Say or type it</label><div class="say"><input id="q-say" name="say" autocomplete="off" enterkeyhint="go" maxlength="200" placeholder="e.g. Meralco 2,500 every 5th">'+
+    (SpeechRec||IOS?'<button type="button" class="btn soft" data-action="say-listen" aria-label="Speak">'+MIC+'</button>':'')+'<button class="btn soft" type="submit">Go</button></div>'+
+    '<span class="hint">Like “Salary 15k every 15th and 30th” or “Lent Juan 500, pay back by December 15”. Or pick one:</span></div><div class="addopts">'+
+    opt('new-bill','out','Bill','Rent, Meralco, subscriptions')+opt('new-bill','in','Income','Salary, allowance, remittance')+
+    opt('new-loan','in','Money I lent','A friend owes you')+opt('new-loan','out','Money I owe','You borrowed from someone')+
+    '</div><button type="button" class="btn" data-action="cancel-form">Cancel</button></form>';
+}
 function billForm(){
   const f=S.form, v=f.values||{}, isIn=f.dir==='in', item=isIn?'income':'bill';
   const freq=v.freq||'monthly';
@@ -254,9 +268,6 @@ function billForm(){
   else when='<div class="field"><label for="b-date">'+(freq==='once'?(isIn?'Expected date':'Due date'):(isIn?'Next expected date':'Next due date'))+'</label><input id="b-date" name="dueDate" type="date" required value="'+esc(v.dueDate||iso(today()))+'">'+
     (freq==='once'?'':'<span class="hint">It repeats '+FREQ_SHORT[freq]+' from this date.</span>')+'</div>';
   return '<form class="editor" data-form="bill"><h3 id="sheet-h">'+(f.id?'Edit '+item:'New '+item)+'</h3>'+
-  (f.id?'':'<div class="field"><label for="b-say">Quick add</label><div class="say"><input id="b-say" name="say" autocomplete="off" enterkeyhint="go" maxlength="200" placeholder="'+(isIn?'e.g. Salary 15k every 15th and 30th':'e.g. Meralco 2,500 every 5th')+'" value="'+esc(v.say)+'">'+
-    (SpeechRec?'<button type="button" class="btn soft" data-action="say-listen" aria-label="Speak">'+MIC+'</button>':'')+'<button type="button" class="btn soft" data-action="say-fill">Fill</button></div>'+
-    '<span class="hint">Type it, or tap the mic on your keyboard and say it. Then check the fields below.</span></div>')+
   '<div class="grid2"><div class="field"><label for="b-name">'+(isIn?'Source':'Bill')+'</label><input id="b-name" name="name" required maxlength="80" placeholder="'+(isIn?'e.g. Salary, allowance':'e.g. Meralco, rent')+'" value="'+esc(v.name)+'"></div>'+
   '<div class="field"><label for="b-cat">Category</label><select id="b-cat" name="category"><option value="">Choose…</option>'+
     CATS[isIn?'in':'out'].map(([k,t])=>'<option value="'+k+'"'+(v.category===k?' selected':'')+'>'+t+'</option>').join('')+'</select></div></div>'+
@@ -297,7 +308,7 @@ function payForm(){
 function loansView(dir){
   const ready=S.loaded.loans||!S.live, o=dir==='out';
   const mine=S.loans.filter(l=>(owes(l)?'out':'in')===dir);
-  let h='<div class="bar gap" id="'+(o?'owe-h':'loans-h')+'"><h2>'+(o?'You owe':'Friends owe you')+'</h2>'+(S.readOnly?'':'<button class="btn soft small" data-action="new-loan" data-dir="'+dir+'">'+(o?'+ Add debt':'+ Add loan')+'</button>')+'</div>';
+  let h='<div class="bar gap" id="'+(o?'owe-h':'loans-h')+'"><h2>'+(o?'You owe':'Friends owe you')+'</h2></div>';
   const withI=mine.map(l=>({l,i:loanInfo(l)}));
   const open=withI.filter(x=>!x.i.settled).sort((a,b)=>{
     const pa=a.i.promise?a.i.promise.date:null, pb=b.i.promise?b.i.promise.date:null;
@@ -516,6 +527,8 @@ document.addEventListener('click',e=>{
   if(a==='hist-month'){ S.histMonth=el.dataset.month; S.calDay=null; render(); return; }
   if(a==='pick-day'){ S.calDay=S.calDay===el.dataset.day?null:el.dataset.day; render(); return; }
   if(a==='export-csv'){ exportCsv(); return; }
+  if(a==='add-menu'){ S.form={type:'add'}; render(); return; }
+  if((a==='new-bill'||a==='new-loan') && el.closest('.addmenu') && S.tab!==el.dataset.dir){ S.tab=el.dataset.dir; try{localStorage.setItem('bayad-tab',S.tab)}catch(_){} } // show where it lands
   if(a==='new-bill'){ S.form={type:'bill',dir:el.dataset.dir||'out',values:{freq:'monthly'}}; render(); return; }
   if(a==='new-loan'){ S.form={type:'loan',dir:el.dataset.dir||'in',values:{}}; render(); return; }
   if(a==='edit-bill'){
@@ -525,7 +538,6 @@ document.addEventListener('click',e=>{
   }
   if(a==='edit-loan'){ const l=find('loans',id); S.form={type:'loan',dir:owes(l)?'out':'in',id,values:clone(l)}; render(); return; }
   if(a==='cancel-form'){ S.form=null; render(); return; }
-  if(a==='say-fill'){ fillFromSay(el.form); return; }
   if(a==='say-listen'){ listen(el); return; }
   if(a==='ask-del'){ S.confirmDel=id; render(); return; }
   if(a==='cancel-del'){ S.confirmDel=null; render(); return; }
@@ -564,19 +576,22 @@ function fallbackCopy(msg){
 }
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape' && S.form){ S.form=null; render(); }
-  if(e.key==='Enter' && e.target.id==='b-say'){ e.preventDefault(); fillFromSay(e.target.form); }
 });
-// Quick add: fill the bill form from a sentence (see voice.js).
-function fillFromSay(form){
-  const v=readForm(form), got=BayadVoice.parse(v.say,{today:today(),dir:S.form.dir,freq:v.freq}), n=Object.keys(got).length;
-  if(!n){ toast(S.form.dir==='in'?'Try something like “Salary 15k every 15th and 30th”.':'Try something like “Meralco 2,500 every 5th”.'); return; }
-  S.form.values=Object.assign(v,got,{_read:true}); S.form._focused=true; render();
-  toast('Filled in '+n+' field'+(n>1?'s':'')+'. Check them, then tap Add.');
+// Quick add from the + menu: work out what the sentence is, then open that form filled in (see voice.js).
+function quickAdd(text){
+  const g=BayadVoice.guess(text,{today:today()}), n=Object.keys(g.values).length;
+  if(!n){ toast('Try something like “Meralco 2,500 every 5th”.'); return; }
+  if(S.tab!==g.dir){ S.tab=g.dir; try{localStorage.setItem('bayad-tab',S.tab)}catch(_){} }
+  S.form={type:g.type,dir:g.dir,values:g.type==='bill'?Object.assign({freq:'monthly'},g.values):g.values,_focused:true}; render();
+  const what=g.type==='bill'?(g.dir==='in'?'income':'a bill'):(g.dir==='in'?'money you lent':'money you owe');
+  toast('Looks like '+what+'. Check it, then tap Add.');
 }
-// The in-app mic, where the browser offers speech recognition. The keyboard's mic works everywhere else.
+// The in-app mic, where the browser offers speech recognition. On iPhone it fails inside home-screen apps,
+// so there the button opens the keyboard instead, whose mic key always works.
 function listen(btn){
+  if(IOS){ const input=document.getElementById('q-say'); if(input){ input.focus(); input.select(); } toast('Tap the mic key on your keyboard, say it, then tap Go.'); return; }
   const r=new SpeechRec(); r.lang='en-PH'; r.interimResults=false; r.maxAlternatives=1;
-  r.onresult=e=>{ const input=document.getElementById('b-say'); if(!input) return; input.value=e.results[0][0].transcript; fillFromSay(input.form); };
+  r.onresult=e=>{ if(document.getElementById('q-say')) quickAdd(e.results[0][0].transcript); };
   r.onerror=e=>toast(e.error==='no-speech'?'Didn’t catch that. Try again.':'The mic isn’t available here. Tap the mic on your keyboard instead.');
   r.onend=()=>btn.classList.remove('listening');
   try{ r.start(); btn.classList.add('listening'); }catch(_){ toast('The mic isn’t available here. Tap the mic on your keyboard instead.'); }
@@ -589,6 +604,7 @@ const clampDay = x => Math.min(31,Math.max(1,parseInt(x,10)||1));
 document.addEventListener('submit',e=>{
   const form=e.target; e.preventDefault();
   const kind=form.dataset.form;
+  if(kind==='quick'){ quickAdd(readForm(form).say); return; }
   if(kind==='bill'){
     const v=readForm(form); const f=S.form;
     const base=f.id?clone(find('bills',f.id)):{id:uid(),created:new Date().toISOString(),paid:{}};

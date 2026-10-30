@@ -111,5 +111,32 @@
     return out;
   }
 
-  root.BayadVoice = { parse };
+  // Which form a sentence belongs to. Loans are checked first: "Juan owes me 500" is not a bill.
+  const LENT = /\b(lent|loaned|lend|pinahiram(?: ko)?(?: si| kay)?|owes me|owe me|borrowed from me|hiniram ni|utang ni|may utang sa akin)\b/i;
+  const OWE = /\b(i owe|owe|borrowed(?: from)?|hiniram ko(?: kay)?|utang ko(?: kay| sa)?|nangutang ako(?: kay| sa)?|nangutang)\b/i;
+  const INCOME = /\b(income|salary|sweldo|suweldo|sahod|payroll|payday|pay day|paycheck|freelance|commission|sideline|negosyo|allowance|baon|remittance|ofw|received?|kita)\b/i;
+  const FRIEND_FILLER = /\b(si|kay|ni|from|to|me|ko|back|akin|mo|until|hanggang|owes?|ako|need|needs|return|ibabalik|babayaran)\b/gi;
+
+  // A sentence from the + button: { type: 'bill' | 'loan', dir: 'out' | 'in', values } for the form it opens.
+  function guess(text, opts = {}) {
+    const t0 = opts.today || new Date(), today = new Date(t0.getFullYear(), t0.getMonth(), t0.getDate());
+    let s = String(text || '');
+    const lent = s.match(LENT), owe = !lent && s.match(OWE);
+    if (lent || owe) {
+      s = s.replace(lent ? LENT : OWE, ' ');
+      const values = {};
+      const y = s.match(/\b(yesterday|kahapon)\b/i);
+      if (y) { s = s.replace(y[0], ' '); values.lentDate = iso(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1)); }
+      const p = parse(s, { today, freq: 'once' });
+      if (p.amount != null) values.amount = p.amount;
+      if (p.dueDate) values.promiseDate = p.dueDate;
+      const friend = (p.name || '').replace(FRIEND_FILLER, ' ').replace(/\s+/g, ' ').trim();
+      if (friend) values.friend = friend.charAt(0).toUpperCase() + friend.slice(1);
+      return { type: 'loan', dir: lent ? 'in' : 'out', values };
+    }
+    const dir = INCOME.test(s) ? 'in' : 'out';
+    return { type: 'bill', dir, values: parse(s, { today, dir }) };
+  }
+
+  root.BayadVoice = { parse, guess };
 })(typeof module !== 'undefined' ? module.exports : self);
