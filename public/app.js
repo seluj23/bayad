@@ -125,7 +125,7 @@ function render(){
   document.getElementById('c-in').textContent=(openBills('in')+openLoans('in'))||'';
   const main=document.getElementById('main');
   main.innerHTML = S.tab==='history'?calendarView():billsView(S.tab)+loansView(S.tab);
-  document.getElementById('fab').hidden=S.readOnly;
+  document.getElementById('fab').hidden=S.readOnly||!document.getElementById('settings').hidden;
   renderSheet();
   renderNotice();
 }
@@ -523,7 +523,8 @@ document.addEventListener('click',e=>{
     return;
   }
   if(a==='toggle'){ S.open=S.open===id?null:id; S.confirmDel=null; render(); return; }
-  if(a==='goto-settings'){ document.getElementById('settings').scrollIntoView({behavior:'smooth',block:'start'}); return; }
+  if(a==='goto-settings'){ const box=document.getElementById('settings'); if(!box.hidden) return showSettings(false); showSettings(true); box.scrollIntoView({behavior:'smooth',block:'start'}); return; }
+  if(a==='close-settings'){ showSettings(false); window.scrollTo({top:0,behavior:'smooth'}); return; }
   if(a==='hist-month'){ S.histMonth=el.dataset.month; S.calDay=null; render(); return; }
   if(a==='pick-day'){ S.calDay=S.calDay===el.dataset.day?null:el.dataset.day; render(); return; }
   if(a==='export-csv'){ exportCsv(); return; }
@@ -599,6 +600,8 @@ function listen(btn){
 document.addEventListener('change',e=>{
   if(e.target.id==='b-freq' && S.form){ S.form.values=Object.assign(readForm(e.target.form),{freq:e.target.value,_read:true}); S.form._focused=true; render(); }
 });
+// Sync & backup stays out of the way until the status pill in the header opens it.
+function showSettings(on){ document.getElementById('settings').hidden=!on; document.getElementById('netstatus').setAttribute('aria-expanded',on); document.getElementById('fab').hidden=S.readOnly||on; }
 function readForm(form){ const o={}; new FormData(form).forEach((v,k)=>o[k]=v); return o; }
 const clampDay = x => Math.min(31,Math.max(1,parseInt(x,10)||1));
 document.addEventListener('submit',e=>{

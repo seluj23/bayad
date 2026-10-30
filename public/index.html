@@ -62,6 +62,8 @@ header p{margin:1px 0 0;color:var(--muted);font-size:13px}
 .status{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--muted);background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:5px 10px;white-space:nowrap}
 .status::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ok);flex:none}
 .status.off::before{background:var(--warn)}
+.status::after{content:"";width:5px;height:5px;border-right:1.6px solid;border-bottom:1.6px solid;transform:translateY(-2px) rotate(45deg);margin-left:2px;flex:none}
+.status[aria-expanded="true"]::after{transform:translateY(1px) rotate(-135deg)}
 
 /* summary card */
 .summary{background:var(--surface);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);overflow:hidden}
@@ -238,6 +240,7 @@ details.settled .row{opacity:.7}
 /* settings */
 .tools{display:flex;flex-direction:column;gap:12px;padding:16px;margin-top:8px}
 .tools h3{font-size:16px;font-weight:600}
+.tools-h{display:flex;justify-content:space-between;align-items:center;gap:10px}
 .tools p{margin:0;font-size:13px;color:var(--muted)}
 .tools .inline{gap:8px}
 .tools-sync{display:flex;flex-direction:column;gap:10px}
@@ -301,7 +304,7 @@ details.backup > div{display:flex;flex-direction:column;gap:10px;padding-bottom:
         <p id="today"></p>
       </div>
     </div>
-    <button type="button" class="status" id="netstatus" data-action="goto-settings" aria-live="polite">Saved on this device</button>
+    <button type="button" class="status" id="netstatus" data-action="goto-settings" aria-controls="settings" aria-expanded="false" aria-live="polite">Saved on this device</button>
   </header>
 
   <div id="notice"></div>
@@ -317,8 +320,8 @@ details.backup > div{display:flex;flex-direction:column;gap:10px;padding-bottom:
   <main id="main"></main>
   <button class="fab" id="fab" data-action="add-menu" aria-label="Add" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v11M2.5 8h11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
 
-  <section class="panel tools" id="settings" aria-labelledby="tools-h">
-    <h3 id="tools-h">Sync &amp; backup</h3>
+  <section class="panel tools" id="settings" aria-labelledby="tools-h" hidden>
+    <div class="tools-h"><h3 id="tools-h">Sync &amp; backup</h3><button type="button" class="btn small ghost" data-action="close-settings">Close</button></div>
     <div id="syncbox" class="tools-sync" hidden></div>
     <details class="backup">
       <summary>Backup &amp; restore<svg class="chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></summary>
