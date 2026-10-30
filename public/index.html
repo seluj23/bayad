@@ -45,7 +45,7 @@ html{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:
 *{box-sizing:border-box}
 body{margin:0;-webkit-text-size-adjust:100%;-webkit-tap-highlight-color:transparent;background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.45;
   padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:16px 100px}
-body.locked{overflow:hidden}
+body.locked{position:fixed;left:0;right:0;overflow:hidden} /* top is set from JS so the page stays where it was */
 .wrap{max-width:560px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
 h1,h2,h3{font-family:var(--f-display);margin:0;text-wrap:balance}
 button,input,select,textarea{font:inherit;color:inherit}
@@ -186,8 +186,10 @@ button.tick:active{transform:scale(.92)}
 /* bottom sheet for add/edit forms */
 .sheet-wrap{position:fixed;inset:0;z-index:30;display:flex;align-items:flex-end;justify-content:center}
 .backdrop{position:absolute;inset:0;background:rgba(6,12,10,.45)}
-.sheet{position:relative;width:100%;max-width:560px;max-height:92dvh;overflow:auto;overscroll-behavior:contain;background:var(--surface);border-radius:22px 22px 0 0;padding-bottom:env(safe-area-inset-bottom,0px);box-shadow:0 -10px 40px rgba(0,0,0,.18)}
+.sheet{position:relative;width:100%;max-width:560px;max-height:92%;overflow:auto;overscroll-behavior:contain;background:var(--surface);border-radius:22px 22px 0 0;padding-bottom:env(safe-area-inset-bottom,0px);box-shadow:0 -10px 40px rgba(0,0,0,.18)}
 .sheet::before{content:"";display:block;width:40px;height:4px;border-radius:2px;background:var(--line);margin:8px auto 0}
+.sheet.dragging{transition:none}
+.sheet.settle{transition:transform .2s ease-out}
 @media (min-width:640px){
   .sheet-wrap{align-items:center;padding:24px}
   .sheet{border-radius:22px;max-width:480px}

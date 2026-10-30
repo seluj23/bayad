@@ -133,9 +133,9 @@ function renderSheet(){
   const wrap=document.getElementById('sheet'), body=document.getElementById('sheet-body');
   if(S.form){
     body.innerHTML=({add:addMenu,bill:billForm,loan:loanForm,pay:payForm})[S.form.type]();
-    if(wrap.hidden){ wrap.hidden=false; document.body.classList.add('locked'); }
+    if(wrap.hidden){ wrap.hidden=false; lockPage(true); fitSheet(); }
     const f=body.querySelector('input'); if(f && !S.form._focused){ f.focus(); S.form._focused=true; }
-  } else if(!wrap.hidden){ wrap.hidden=true; body.innerHTML=''; document.body.classList.remove('locked'); }
+  } else if(!wrap.hidden){ wrap.hidden=true; body.innerHTML=''; body.style.transform=''; lockPage(false); }
 }
 function renderSummary(){
   let od=0,odN=0,wk=0,wkN=0,inc=0,incN=0;
@@ -602,6 +602,38 @@ document.addEventListener('change',e=>{
 });
 // Sync & backup stays out of the way until the status pill in the header opens it.
 function showSettings(on){ document.getElementById('settings').hidden=!on; document.getElementById('netstatus').setAttribute('aria-expanded',on); document.getElementById('fab').hidden=S.readOnly||on; }
+// Sheets on iPhone: pin the page so only the sheet scrolls, keep the sheet above the keyboard, and drag down to close.
+let lockedY=0;
+function lockPage(on){
+  const b=document.body;
+  if(on){ lockedY=window.scrollY; b.style.top=-lockedY+'px'; b.classList.add('locked'); }
+  else { b.classList.remove('locked'); b.style.top=''; window.scrollTo(0,lockedY); }
+}
+function fitSheet(){
+  const wrap=document.getElementById('sheet'), vv=window.visualViewport;
+  if(wrap.hidden||!vv) return;
+  wrap.style.top=vv.offsetTop+'px'; wrap.style.height=vv.height+'px'; wrap.style.bottom='auto';
+}
+if(window.visualViewport){ visualViewport.addEventListener('resize',fitSheet); visualViewport.addEventListener('scroll',fitSheet); }
+(()=>{
+  const sheet=document.getElementById('sheet-body'); let y0=null, dy=0, t0=0;
+  sheet.addEventListener('touchstart',e=>{
+    if(e.touches.length!==1 || sheet.scrollTop>0 || e.target.closest('input,textarea,select')) { y0=null; return; }
+    y0=e.touches[0].clientY; dy=0; t0=Date.now();
+  },{passive:true});
+  sheet.addEventListener('touchmove',e=>{
+    if(y0==null) return;
+    dy=e.touches[0].clientY-y0;
+    if(dy<=0 || sheet.scrollTop>0){ if(dy<0) y0=null; dy=0; sheet.style.transform=''; return; }
+    e.preventDefault(); sheet.classList.add('dragging'); sheet.style.transform='translateY('+dy+'px)';
+  },{passive:false});
+  sheet.addEventListener('touchend',()=>{
+    if(y0==null) return; y0=null; sheet.classList.remove('dragging');
+    const fast=dy>40 && dy/(Date.now()-t0)>0.5;
+    if(dy>110||fast){ if(document.activeElement) document.activeElement.blur(); S.form=null; render(); return; }
+    sheet.classList.add('settle'); sheet.style.transform=''; setTimeout(()=>sheet.classList.remove('settle'),220);
+  });
+})();
 function readForm(form){ const o={}; new FormData(form).forEach((v,k)=>o[k]=v); return o; }
 const clampDay = x => Math.min(31,Math.max(1,parseInt(x,10)||1));
 document.addEventListener('submit',e=>{
