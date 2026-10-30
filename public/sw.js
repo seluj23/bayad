@@ -1,6 +1,6 @@
 // Bayad service worker: serves the app from cache so it opens with no internet.
 // Bump VERSION whenever you change index.html or other app files.
-const VERSION = 'bayad-v13';
+const VERSION = 'bayad-v14';
 const APP_SHELL = [
   './',
   './index.html',
@@ -8,6 +8,7 @@ const APP_SHELL = [
   './manifest.webmanifest',
   './db-worker.js',
   './schedule.js',
+  './voice.js',
   './sqlite/sqlite3.mjs',
   './sqlite/sqlite3.wasm',
   './sqlite/sqlite3-opfs-async-proxy.js',

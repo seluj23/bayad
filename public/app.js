@@ -19,6 +19,8 @@ const S = { bills:[], loans:[], tab:'out', form:null, confirmDel:null, open:null
 try{ const t=localStorage.getItem('bayad-tab'); if(t==='in'||t==='out'||t==='history') S.tab=t; }catch(e){}
 const dirOf = b => b.dir==='in'?'in':'out';
 const plural = (n,one,many) => n+' '+(n===1?one:many);
+const MIC='<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+const SpeechRec=window.SpeechRecognition||window.webkitSpeechRecognition;
 const CHECK='<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const CHEV='<svg class="chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const GO='<svg class="go" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -252,6 +254,9 @@ function billForm(){
   else when='<div class="field"><label for="b-date">'+(freq==='once'?(isIn?'Expected date':'Due date'):(isIn?'Next expected date':'Next due date'))+'</label><input id="b-date" name="dueDate" type="date" required value="'+esc(v.dueDate||iso(today()))+'">'+
     (freq==='once'?'':'<span class="hint">It repeats '+FREQ_SHORT[freq]+' from this date.</span>')+'</div>';
   return '<form class="editor" data-form="bill"><h3 id="sheet-h">'+(f.id?'Edit '+item:'New '+item)+'</h3>'+
+  (f.id?'':'<div class="field"><label for="b-say">Quick add</label><div class="say"><input id="b-say" name="say" autocomplete="off" enterkeyhint="go" maxlength="200" placeholder="'+(isIn?'e.g. Salary 15k every 15th and 30th':'e.g. Meralco 2,500 every 5th')+'" value="'+esc(v.say)+'">'+
+    (SpeechRec?'<button type="button" class="btn soft" data-action="say-listen" aria-label="Speak">'+MIC+'</button>':'')+'<button type="button" class="btn soft" data-action="say-fill">Fill</button></div>'+
+    '<span class="hint">Type it, or tap the mic on your keyboard and say it. Then check the fields below.</span></div>')+
   '<div class="grid2"><div class="field"><label for="b-name">'+(isIn?'Source':'Bill')+'</label><input id="b-name" name="name" required maxlength="80" placeholder="'+(isIn?'e.g. Salary, allowance':'e.g. Meralco, rent')+'" value="'+esc(v.name)+'"></div>'+
   '<div class="field"><label for="b-cat">Category</label><select id="b-cat" name="category"><option value="">Choose…</option>'+
     CATS[isIn?'in':'out'].map(([k,t])=>'<option value="'+k+'"'+(v.category===k?' selected':'')+'>'+t+'</option>').join('')+'</select></div></div>'+
@@ -520,6 +525,8 @@ document.addEventListener('click',e=>{
   }
   if(a==='edit-loan'){ const l=find('loans',id); S.form={type:'loan',dir:owes(l)?'out':'in',id,values:clone(l)}; render(); return; }
   if(a==='cancel-form'){ S.form=null; render(); return; }
+  if(a==='say-fill'){ fillFromSay(el.form); return; }
+  if(a==='say-listen'){ listen(el); return; }
   if(a==='ask-del'){ S.confirmDel=id; render(); return; }
   if(a==='cancel-del'){ S.confirmDel=null; render(); return; }
   if(a==='del-bill'){ S.confirmDel=null; remove('bills',id); toast('Deleted'); return; }
@@ -555,7 +562,25 @@ function fallbackCopy(msg){
   t.innerHTML='<span style="user-select:all">'+esc(msg)+'</span>'; t.hidden=false; clearTimeout(toastTimer);
   toastTimer=setTimeout(()=>{t.hidden=true},10000);
 }
-document.addEventListener('keydown',e=>{ if(e.key==='Escape' && S.form){ S.form=null; render(); } });
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape' && S.form){ S.form=null; render(); }
+  if(e.key==='Enter' && e.target.id==='b-say'){ e.preventDefault(); fillFromSay(e.target.form); }
+});
+// Quick add: fill the bill form from a sentence (see voice.js).
+function fillFromSay(form){
+  const v=readForm(form), got=BayadVoice.parse(v.say,{today:today(),dir:S.form.dir,freq:v.freq}), n=Object.keys(got).length;
+  if(!n){ toast(S.form.dir==='in'?'Try something like “Salary 15k every 15th and 30th”.':'Try something like “Meralco 2,500 every 5th”.'); return; }
+  S.form.values=Object.assign(v,got,{_read:true}); S.form._focused=true; render();
+  toast('Filled in '+n+' field'+(n>1?'s':'')+'. Check them, then tap Add.');
+}
+// The in-app mic, where the browser offers speech recognition. The keyboard's mic works everywhere else.
+function listen(btn){
+  const r=new SpeechRec(); r.lang='en-PH'; r.interimResults=false; r.maxAlternatives=1;
+  r.onresult=e=>{ const input=document.getElementById('b-say'); if(!input) return; input.value=e.results[0][0].transcript; fillFromSay(input.form); };
+  r.onerror=e=>toast(e.error==='no-speech'?'Didn’t catch that. Try again.':'The mic isn’t available here. Tap the mic on your keyboard instead.');
+  r.onend=()=>btn.classList.remove('listening');
+  try{ r.start(); btn.classList.add('listening'); }catch(_){ toast('The mic isn’t available here. Tap the mic on your keyboard instead.'); }
+}
 document.addEventListener('change',e=>{
   if(e.target.id==='b-freq' && S.form){ S.form.values=Object.assign(readForm(e.target.form),{freq:e.target.value,_read:true}); S.form._focused=true; render(); }
 });
