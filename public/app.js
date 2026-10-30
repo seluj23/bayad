@@ -1038,7 +1038,12 @@ window.addEventListener('appinstalled',()=>{ document.getElementById('installrow
 const standalone=window.matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;
 if(/iphone|ipad|ipod/i.test(navigator.userAgent) && !standalone) document.getElementById('iosinstall').hidden=false;
 if(navigator.storage && navigator.storage.persist){ navigator.storage.persist().catch(()=>{}); }
-if('serviceWorker' in navigator){ window.addEventListener('load',()=>{ navigator.serviceWorker.register('sw.js').catch(()=>{}); }); }
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{ navigator.serviceWorker.register('sw.js').catch(()=>{}); });
+  // A new version took over: this page has the new HTML but may be running the old app.js from cache, so reload once.
+  // Not while a form is open, so nothing typed is lost; the next launch picks it up instead.
+  if(navigator.serviceWorker.controller){ let done=false; navigator.serviceWorker.addEventListener('controllerchange',()=>{ if(!done && !S.form){ done=true; location.reload(); } }); }
+}
 
 setInterval(()=>{ const d=iso(today()); if(d!==S._day){ S._day=d; render(); } },60000);
 S._day=iso(today());
